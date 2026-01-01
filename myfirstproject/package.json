@@ -1,19 +1,18 @@
 {
-  "name": "myfirstproject",
-  "author": "MakeAwesomeHappen",
+  "name": "pachinko-for-pebble",
+  "author": "Ben Combee <combee@techwood.org>",
   "version": "1.0.0",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {},
   "pebble": {
-    "displayName": "myfirstproject",
-    "uuid": "00000000-0000-0000-0000-000000000001",
+    "displayName": "Pachinko",
+    "uuid": "ae0e8ca9-6525-422e-87d7-027447cac037",
     "sdkVersion": "3",
     "enableMultiJS": true,
     "targetPlatforms": [
       "aplite",
       "basalt",
-      "chalk",
       "diorite",
       "emery"
     ],
