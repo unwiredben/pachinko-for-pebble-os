@@ -31,7 +31,7 @@ User Interface Flow
 - uses accelerometer to add nudging to ball movement
 
 ## Options Screen
-- Uses MenuLayer
+- Uses SimpleMenuLayer
   - How to play
   - High Scores
   - Table Select
