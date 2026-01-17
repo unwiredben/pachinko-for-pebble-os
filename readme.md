@@ -1,13 +1,16 @@
 Pachinko for Pebble
 ===================
 
-This is a simple Pachinko simulator that runs on Pebble OS.
-It simulates the popular ball launching game from Japan, letting
-the user switch between manual and automatic ball launching,
-while affecting the movement using the watches' accelerometer.
+This is a simple Pachinko simulator that runs on Pebble OS. It simulates the
+popular ball launching game from Japan, letting the user switch between manual
+and automatic ball launching, while affecting the movement using the watches'
+accelerometer.
 
-It was developed in early 2026 by Ben Combee with graphical
-assets and playtesting by Elias Combee.
+It was developed in early 2026 by Ben Combee with graphical assets and
+playtesting by Elias Combee.
+
+This code uses the PGE framework for game development from the pebble-hacks
+sample pandas-and-bananas under the MIT license.
 
 User Interface Flow
 ===================
@@ -37,7 +40,6 @@ User Interface Flow
   - Table Select
   - Vibration - on/off
   - Reset balls (with confirmation)
-  - Credits
 - Back returns to *Game Screen*
 
 # Graphics Assets
