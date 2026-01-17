@@ -26,6 +26,12 @@
       "media": [
         {
           "type": "bitmap",
+          "name": "MENU_ICON",
+          "file": "pachinko-icon.png",
+          "menuIcon": true
+        },
+        {
+          "type": "bitmap",
           "name": "TITLESCREEN_IMAGE",
           "file": "pachinko-logo.png"
         }
