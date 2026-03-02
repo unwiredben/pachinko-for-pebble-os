@@ -1,5 +1,7 @@
 #include <pebble.h>
 
+#include "ball.h"
+
 enum GameState {
   GAME_STATE_TITLESCREEN,
   GAME_STATE_PLAYING,
@@ -12,59 +14,6 @@ static enum GameState s_game_state = GAME_STATE_TITLESCREEN;
 static bool s_vibration_enabled = true;
 #define INITIAL_BALL_COUNT 10
 static uint32_t s_ball_count = INITIAL_BALL_COUNT;
-
-typedef int32_t Fixed16_16;
-#define FIXED16_16_FROM_INT(i) ((i) << 16)
-#define INT_FROM_FIXED16_16(f) (((f) + 32768) >> 16)
-
-typedef struct Position {
-  Fixed16_16 x;
-  Fixed16_16 y;
-} Position;
-
-// velocity is defined as pixel motion per tick (1/30th of a second)
-typedef struct Velocity {
-  Fixed16_16 dx;
-  Fixed16_16 dy;
-} Velocity;
-
-static Velocity s_gravity = {
-  .dx = FIXED16_16_FROM_INT(0),
-  .dy = FIXED16_16_FROM_INT(1), // 1 pixel per tick downward
-};
-
-// a ball with position off screen and 0 velocity is considered inactive
-typedef struct BallState {
-  Position position;
-  Velocity velocity;
-} BallState;
-
-void reset_ball(BallState *ball) {
-  ball->position.x = FIXED16_16_FROM_INT(-50);
-  ball->position.y = FIXED16_16_FROM_INT(-50);
-  ball->velocity.dx = FIXED16_16_FROM_INT(0);
-  ball->velocity.dy = FIXED16_16_FROM_INT(0);
-}
-
-void ball_tick(BallState *ball) {
-  ball->position.x += ball->velocity.dx;
-  ball->position.y += ball->velocity.dy;
-}
-
-void ball_apply_force(BallState *ball, Velocity force) {
-  ball->velocity.dx += force.dx;
-  ball->velocity.dy += force.dy;
-}
-
-void draw_ball(GContext *ctx, BallState *ball) {
-  int16_t x = INT_FROM_FIXED16_16(ball->position.x);
-  int16_t y = INT_FROM_FIXED16_16(ball->position.y);
-  graphics_context_set_stroke_color(ctx, GColorWhite);
-  graphics_context_set_stroke_width(ctx, 1);
-  graphics_context_set_fill_color(ctx, GColorBlack);
-  graphics_fill_circle(ctx, GPoint(x, y), 3);
-  graphics_draw_circle(ctx, GPoint(x, y), 3);
-}
 
 static void set_ball_count(uint16_t count);
 
@@ -79,7 +28,6 @@ static void change_vibration(int index, void *context);
 static void show_help(int index, void *context);
 static void show_high_scores(int index, void *context);
 static void reset_ball_count(int index, void *context);
-static void show_credits(int index, void *context);
 
 SimpleMenuItem s_options_items[] = {
   {
@@ -87,20 +35,16 @@ SimpleMenuItem s_options_items[] = {
     .callback = change_vibration,
   },
   {
-    .title = "How to Play",
-    .callback = show_help,
+    .title = "Reset ball count",
+    .callback = reset_ball_count,
   },
   {
     .title = "High Scores",
     .callback = show_high_scores,
   },
   {
-    .title = "Reset ball count",
-    .callback = reset_ball_count,
-  },
-  {
-    .title = "Credits",
-    .callback = show_credits,
+    .title = "How to Play",
+    .callback = show_help,
   },
 };
 
@@ -127,15 +71,11 @@ void show_help(int index, void *context) {
 }
 
 void show_high_scores(int index, void *context) {
-  // FIXME: show high scores window  
+  // FIXME: show high scores window
 }
 
 void reset_ball_count(int index, void *context) {
   set_ball_count(INITIAL_BALL_COUNT);
-}
-
-void show_credits(int index, void *context) {
-  // FIXME: show credits window
 }
 
 static void options_window_load(Window *window) {
@@ -175,16 +115,65 @@ static GBitmap *s_titlescreen_bitmap;
 static TextLayer *s_score_layer;
 static char s_score_text[14] = "9999999 balls";
 static Layer *s_pachinko_layer;
+static AppTimer *s_render_timer = NULL;
+static uint8_t s_framerate = 30;
+
+#define BALL_RADIUS 3
+static BallState s_ball;
+static bool s_ball_active = false;
+
+static int16_t get_playfield_radius(void) {
+  GRect rect = layer_get_bounds(s_pachinko_layer);
+  return (rect.size.w < rect.size.h ? rect.size.w : rect.size.h) / 2;
+}
+
+static GPoint get_playfield_center(void) {
+  GRect rect = layer_get_bounds(s_pachinko_layer);
+  return GPoint(rect.size.w / 2, rect.size.h / 2);
+}
+
+static void update_ball_physics(void) {
+  if (!s_ball_active) return;
+
+  ball_apply_force(&s_ball, s_gravity);
+  ball_tick(&s_ball);
+
+  GPoint center = get_playfield_center();
+  int16_t radius = get_playfield_radius();
+  int16_t ball_y = INT_FROM_FIXED16_16(s_ball.position.y);
+
+  if (ball_y > center.y + radius - BALL_RADIUS) {
+    reset_ball(&s_ball);
+    s_ball_active = false;
+  }
+}
+
+static void frame_timer_handler(void *context) {
+  if (s_game_state == GAME_STATE_PLAYING) {
+    update_ball_physics();
+    layer_mark_dirty(s_pachinko_layer);
+  }
+  s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler, NULL);
+}
+
 
 static void toggle_auto_launch() {
   // Placeholder function to toggle auto-launch feature
 }
 
 static void launch_ball() {
-  if (s_ball_count > 0) {
+  if (s_ball_count > 0 && !s_ball_active) {
     set_ball_count(s_ball_count - 1);
+
+    GPoint center = get_playfield_center();
+    int16_t radius = get_playfield_radius();
+
+    s_ball.position.x = FIXED16_16_FROM_INT(center.x);
+    s_ball.position.y = FIXED16_16_FROM_INT(center.y - radius + BALL_RADIUS + 2);
+    s_ball.velocity.dx = FIXED16_16_FROM_INT(0);
+    s_ball.velocity.dy = FIXED16_16_FROM_INT(0);
+    s_ball_active = true;
   }
-  // FIXME: actually put a ball into action
 }
 
 static void game_window_set_active_layers(void) {
@@ -196,32 +185,41 @@ static void game_window_set_active_layers(void) {
   layer_set_hidden(s_pachinko_layer, on_title_screen);
 }
 
+static bool dismiss_title_screen(void) {
+  if (s_game_state == GAME_STATE_TITLESCREEN) {
+    s_game_state = GAME_STATE_PLAYING;
+    game_window_set_active_layers();
+    return true;
+  }
+  return false;
+}
+
 static void game_up_click_handler(ClickRecognizerRef ref, void *context) {
+  if (dismiss_title_screen()) return;
   toggle_auto_launch();
 }
 
 static void game_select_click_handler(ClickRecognizerRef ref, void *context) {
-  if (s_game_state == GAME_STATE_TITLESCREEN) {
-    s_game_state = GAME_STATE_PLAYING;
-    game_window_set_active_layers();
-  }
-  else {
-    show_options_window();
-  }
+  if (dismiss_title_screen()) return;
+  show_options_window();
 }
 
 static void game_down_click_handler(ClickRecognizerRef ref, void *context) {
+  if (dismiss_title_screen()) return;
   launch_ball();
 }
 
 static void update_pachinko_layer(Layer *layer, GContext *ctx) {
-  // black background already drawn by windows
   GRect rect = layer_get_bounds(layer);
   int16_t radius = rect.size.w < rect.size.h
     ? rect.size.w / 2
     : rect.size.h / 2;
-  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_context_set_fill_color(ctx, GColorBlack);
   graphics_fill_circle(ctx, GPoint(rect.size.w / 2, rect.size.h / 2), radius);
+
+  if (s_ball_active) {
+    draw_ball(ctx, &s_ball);
+  }
 }
 
 #define LAUNCH_REPEAT_DELAY_MS 500
@@ -243,36 +241,50 @@ static void game_window_load(Window *window) {
   bitmap_layer_set_bitmap(s_titlescreen_layer, s_titlescreen_bitmap);
   layer_add_child(window_layer, bitmap_layer_get_layer(s_titlescreen_layer));
 
-  GFont score_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  GFont score_font = fonts_get_system_font(FONT_KEY_GOTHIC_28);
 
+  const int16_t text_y_offset = -2;
+  const int16_t y_padding = 4;
   GSize font_size = graphics_text_layout_get_content_size(
     s_score_text, score_font, bounds, GTextOverflowModeWordWrap,
     GTextAlignmentCenter);
-  s_score_layer = text_layer_create(GRect(0, 0, bounds.size.w, font_size.h + 2));
-  text_layer_set_text_color(s_score_layer, GColorWhite);
-  text_layer_set_background_color(s_score_layer, GColorBlack);
+  s_score_layer = text_layer_create(GRect(0, text_y_offset,
+      bounds.size.w, font_size.h));
+  text_layer_set_text_color(s_score_layer, GColorBlack);
+  text_layer_set_background_color(s_score_layer, GColorWhite);
   text_layer_set_font(s_score_layer, score_font);
   text_layer_set_text_alignment(s_score_layer, GTextAlignmentCenter);
   text_layer_set_text(s_score_layer, s_score_text);
   layer_add_child(window_layer, text_layer_get_layer(s_score_layer));
-  
-  bounds.origin.y += font_size.h + 2;
-  bounds.size.h -= font_size.h + 2;
+
+  bounds.origin.y += font_size.h + text_y_offset + y_padding;
+  bounds.size.h -= font_size.h + text_y_offset + y_padding;
 
   s_pachinko_layer = layer_create(bounds);
   layer_set_update_proc(s_pachinko_layer, update_pachinko_layer);
   layer_add_child(window_layer, s_pachinko_layer);
 
   game_window_set_active_layers();
+
+  // Register new Timer to begin frame rendering loop
+  s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler,
+      NULL);
 }
 
 static void game_window_appear(Window *window) {
-  // FIXME: set layer visibility based on game state
-  // FIXME: setup update timer
+  game_window_set_active_layers();
+
+  if (s_render_timer == NULL) {
+    s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler, NULL);
+  }
 }
 
 static void game_window_disappear(Window *window) {
-  // FIXME: stop update timer
+  // Stop the game
+  if(s_render_timer != NULL) {
+    app_timer_cancel(s_render_timer);
+    s_render_timer = NULL;
+  }
 }
 
 static void game_window_unload(Window *window) {
@@ -294,7 +306,7 @@ static void set_ball_count(uint16_t count) {
 
 static void init(void) {
   s_game_window = window_create();
-  window_set_background_color(s_game_window, GColorBlack);
+  window_set_background_color(s_game_window, GColorWhite);
   window_set_click_config_provider(s_game_window, game_click_config_provider);
   window_set_window_handlers(s_game_window, (WindowHandlers) {
     .load = game_window_load,

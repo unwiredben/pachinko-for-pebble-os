@@ -34,13 +34,10 @@ static void game_window_disappear(Window *window) {
 }
 
 /**
- * pge_init() and pge_deinit() should be implemented in app's main C file
+ * When using PGE's game loop, pge_init() and pge_deinit() should be 
+ * implemented in app's main C file. Alternatively, apps can implement
+ * their own main() and use PGE utilities directly.
  */
-int main(void) {
-  pge_init();
-  app_event_loop();
-  pge_deinit();
-}
 
 Window* pge_begin(PGELogicHandler *logic_handler, PGERenderHandler *render_handler, PGEClickHandler *click_handler) {
   s_logic_handler = logic_handler;
