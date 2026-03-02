@@ -3,7 +3,7 @@
 #include <pebble.h>
 
 typedef int32_t Fixed16_16;
-#define FIXED16_16_FROM_INT(i) ((i) << 16)
+#define FIXED16_16_FROM_INT(i) ((Fixed16_16)(i) * 65536)
 #define INT_FROM_FIXED16_16(f) (((f) + 32768) >> 16)
 
 typedef struct Position {
@@ -30,24 +30,24 @@ typedef struct BallState {
   Velocity velocity;
 } BallState;
 
-inline void reset_ball(BallState *ball) {
+static inline void reset_ball(BallState *ball) {
   ball->position.x = FIXED16_16_FROM_INT(-50);
   ball->position.y = FIXED16_16_FROM_INT(-50);
   ball->velocity.dx = FIXED16_16_FROM_INT(0);
   ball->velocity.dy = FIXED16_16_FROM_INT(0);
 }
 
-inline void ball_tick(BallState *ball) {
+static inline void ball_tick(BallState *ball) {
   ball->position.x += ball->velocity.dx;
   ball->position.y += ball->velocity.dy;
 }
 
-inline void ball_apply_force(BallState *ball, Velocity force) {
+static inline void ball_apply_force(BallState *ball, Velocity force) {
   ball->velocity.dx += force.dx;
   ball->velocity.dy += force.dy;
 }
 
-inline void draw_ball(GContext *ctx, BallState *ball) {
+static inline void draw_ball(GContext *ctx, BallState *ball) {
   int16_t x = INT_FROM_FIXED16_16(ball->position.x);
   int16_t y = INT_FROM_FIXED16_16(ball->position.y);
   graphics_context_set_stroke_color(ctx, GColorWhite);

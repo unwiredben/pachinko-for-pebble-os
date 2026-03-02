@@ -119,8 +119,9 @@ static AppTimer *s_render_timer = NULL;
 static uint8_t s_framerate = 30;
 
 #define BALL_RADIUS 3
-static BallState s_ball;
-static bool s_ball_active = false;
+#define MAX_BALLS 8
+static BallState s_balls[MAX_BALLS];
+static bool s_ball_active[MAX_BALLS];
 
 static int16_t get_playfield_radius(void) {
   GRect rect = layer_get_bounds(s_pachinko_layer);
@@ -133,18 +134,21 @@ static GPoint get_playfield_center(void) {
 }
 
 static void update_ball_physics(void) {
-  if (!s_ball_active) return;
-
-  ball_apply_force(&s_ball, s_gravity);
-  ball_tick(&s_ball);
-
   GPoint center = get_playfield_center();
   int16_t radius = get_playfield_radius();
-  int16_t ball_y = INT_FROM_FIXED16_16(s_ball.position.y);
 
-  if (ball_y > center.y + radius - BALL_RADIUS) {
-    reset_ball(&s_ball);
-    s_ball_active = false;
+  for (int i = 0; i < MAX_BALLS; i++) {
+    if (!s_ball_active[i]) continue;
+
+    ball_apply_force(&s_balls[i], s_gravity);
+    ball_tick(&s_balls[i]);
+
+    int16_t ball_y = INT_FROM_FIXED16_16(s_balls[i].position.y);
+
+    if (ball_y > center.y + radius - BALL_RADIUS) {
+      reset_ball(&s_balls[i]);
+      s_ball_active[i] = false;
+    }
   }
 }
 
@@ -162,18 +166,27 @@ static void toggle_auto_launch() {
 }
 
 static void launch_ball() {
-  if (s_ball_count > 0 && !s_ball_active) {
-    set_ball_count(s_ball_count - 1);
+  if (s_ball_count == 0) return;
 
-    GPoint center = get_playfield_center();
-    int16_t radius = get_playfield_radius();
-
-    s_ball.position.x = FIXED16_16_FROM_INT(center.x);
-    s_ball.position.y = FIXED16_16_FROM_INT(center.y - radius + BALL_RADIUS + 2);
-    s_ball.velocity.dx = FIXED16_16_FROM_INT(0);
-    s_ball.velocity.dy = FIXED16_16_FROM_INT(0);
-    s_ball_active = true;
+  int slot = -1;
+  for (int i = 0; i < MAX_BALLS; i++) {
+    if (!s_ball_active[i]) {
+      slot = i;
+      break;
+    }
   }
+  if (slot < 0) return;
+
+  set_ball_count(s_ball_count - 1);
+
+  GPoint center = get_playfield_center();
+  int16_t radius = get_playfield_radius();
+
+  s_balls[slot].position.x = FIXED16_16_FROM_INT(center.x);
+  s_balls[slot].position.y = FIXED16_16_FROM_INT(center.y - radius + BALL_RADIUS + 2);
+  s_balls[slot].velocity.dx = FIXED16_16_FROM_INT(0);
+  s_balls[slot].velocity.dy = FIXED16_16_FROM_INT(0);
+  s_ball_active[slot] = true;
 }
 
 static void game_window_set_active_layers(void) {
@@ -217,8 +230,10 @@ static void update_pachinko_layer(Layer *layer, GContext *ctx) {
   graphics_context_set_fill_color(ctx, GColorBlack);
   graphics_fill_circle(ctx, GPoint(rect.size.w / 2, rect.size.h / 2), radius);
 
-  if (s_ball_active) {
-    draw_ball(ctx, &s_ball);
+  for (int i = 0; i < MAX_BALLS; i++) {
+    if (s_ball_active[i]) {
+      draw_ball(ctx, &s_balls[i]);
+    }
   }
 }
 
