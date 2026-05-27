@@ -1,4 +1,5 @@
 #include <pebble.h>
+#include <stdlib.h>
 
 #include "ball.h"
 
@@ -12,7 +13,7 @@ enum GameState {
 static enum GameState s_game_state = GAME_STATE_TITLESCREEN;
 
 static bool s_vibration_enabled = true;
-#define INITIAL_BALL_COUNT 10
+#define INITIAL_BALL_COUNT 100
 static uint32_t s_ball_count = INITIAL_BALL_COUNT;
 
 static void set_ball_count(uint16_t count);
@@ -89,6 +90,7 @@ static void options_window_load(Window *window) {
 static void options_window_unload(Window *window) {
   simple_menu_layer_destroy(s_options_menu_layer);
   s_options_menu_layer = NULL;
+
   if (s_ball_count == 0) {
     s_game_state = GAME_STATE_OUT_OF_BALLS;
   }
@@ -98,11 +100,13 @@ static void options_window_unload(Window *window) {
 }
 
 static void show_options_window() {
-  s_options_window = window_create();
-  window_set_window_handlers(s_options_window, (WindowHandlers) {
-    .load = options_window_load,
-    .unload = options_window_unload,
-  });
+  if (!s_options_window) {
+    s_options_window = window_create();
+    window_set_window_handlers(s_options_window, (WindowHandlers) {
+      .load = options_window_load,
+      .unload = options_window_unload,
+    });
+  }
   window_stack_push(s_options_window, true /* animated */);
   s_game_state = GAME_STATE_OPTIONS;
 }
@@ -120,8 +124,91 @@ static uint8_t s_framerate = 30;
 
 #define BALL_RADIUS 3
 #define MAX_BALLS 8
+#define BORDER_RESTITUTION_NUM 3
+#define BORDER_RESTITUTION_DEN 10
+#define LAUNCH_VELOCITY_DX (-FIXED16_16_FROM_INT(6))
+#define LAUNCH_VELOCITY_DY (-FIXED16_16_FROM_INT(2))
+#define LAUNCH_VELOCITY_VARIATION_PERCENT 20
+#define BOTTOM_CULL_MARGIN_PX 6
+#define STUCK_SPEED_THRESHOLD FIXED16_16_FROM_INT(1)
 static BallState s_balls[MAX_BALLS];
 static bool s_ball_active[MAX_BALLS];
+
+static Fixed16_16 vary_launch_velocity(Fixed16_16 base_velocity) {
+  // Scale launch speed by 80%..120% for slight per-ball variation.
+  int32_t scale_percent = 100 + ((rand() %
+      (LAUNCH_VELOCITY_VARIATION_PERCENT * 2 + 1)) -
+      LAUNCH_VELOCITY_VARIATION_PERCENT);
+  return (base_velocity * scale_percent) / 100;
+}
+
+static int32_t isqrt32(int32_t value) {
+  if (value <= 0) {
+    return 0;
+  }
+
+  uint32_t n = (uint32_t)value;
+  uint32_t result = 0;
+  uint32_t bit = 1u << 30;
+
+  while (bit > n) {
+    bit >>= 2;
+  }
+
+  while (bit != 0) {
+    if (n >= result + bit) {
+      n -= result + bit;
+      result = (result >> 1) + bit;
+    } else {
+      result >>= 1;
+    }
+    bit >>= 2;
+  }
+
+  return (int32_t)result;
+}
+
+static void resolve_circle_border_collision(BallState *ball, GPoint center,
+    int16_t playfield_radius) {
+  const int16_t collision_radius = playfield_radius - BALL_RADIUS;
+  int16_t x = INT_FROM_FIXED16_16(ball->position.x);
+  int16_t y = INT_FROM_FIXED16_16(ball->position.y);
+
+  int32_t rel_x = x - center.x;
+  int32_t rel_y = y - center.y;
+  int32_t dist_sq = rel_x * rel_x + rel_y * rel_y;
+  int32_t radius_sq = collision_radius * collision_radius;
+
+  if (dist_sq <= radius_sq) {
+    return;
+  }
+
+  int32_t distance = isqrt32(dist_sq);
+  if (distance <= 0) {
+    return;
+  }
+
+  // Project the ball back inside the circular playfield.
+  rel_x = (rel_x * collision_radius) / distance;
+  rel_y = (rel_y * collision_radius) / distance;
+  x = center.x + rel_x;
+  y = center.y + rel_y;
+  ball->position.x = FIXED16_16_FROM_INT(x);
+  ball->position.y = FIXED16_16_FROM_INT(y);
+
+  // Compute a unit normal in Q10 so we can remove outward velocity.
+  int32_t normal_x_q10 = (rel_x * 1024) / collision_radius;
+  int32_t normal_y_q10 = (rel_y * 1024) / collision_radius;
+  int32_t normal_velocity =
+    (ball->velocity.dx * normal_x_q10 + ball->velocity.dy * normal_y_q10) / 1024;
+
+  if (normal_velocity > 0) {
+    int32_t reflect_scale = ((1024 + (1024 * BORDER_RESTITUTION_NUM / BORDER_RESTITUTION_DEN))
+        * normal_velocity) / 1024;
+    ball->velocity.dx -= (reflect_scale * normal_x_q10) / 1024;
+    ball->velocity.dy -= (reflect_scale * normal_y_q10) / 1024;
+  }
+}
 
 static int16_t get_playfield_radius(void) {
   GRect rect = layer_get_bounds(s_pachinko_layer);
@@ -133,9 +220,26 @@ static GPoint get_playfield_center(void) {
   return GPoint(rect.size.w / 2, rect.size.h / 2);
 }
 
+static bool should_cull_offscreen_ball(const BallState *ball, GRect bounds) {
+  int32_t x = INT_FROM_FIXED16_16(ball->position.x);
+  int32_t y = INT_FROM_FIXED16_16(ball->position.y);
+  int32_t next_x = x + INT_FROM_FIXED16_16(ball->velocity.dx);
+  int32_t next_y = y + INT_FROM_FIXED16_16(ball->velocity.dy);
+  int32_t left = -BALL_RADIUS;
+  int32_t right = bounds.size.w + BALL_RADIUS;
+  int32_t top = -BALL_RADIUS;
+  int32_t bottom = bounds.size.h + BALL_RADIUS;
+
+  return x < left || x > right || y < top || y > bottom ||
+    next_x < left || next_x > right || next_y < top || next_y > bottom;
+}
+
 static void update_ball_physics(void) {
   GPoint center = get_playfield_center();
   int16_t radius = get_playfield_radius();
+  int16_t bottom_limit = center.y + radius - BALL_RADIUS;
+  int16_t stuck_cull_y = bottom_limit - BOTTOM_CULL_MARGIN_PX;
+  GRect playfield_bounds = layer_get_bounds(s_pachinko_layer);
 
   for (int i = 0; i < MAX_BALLS; i++) {
     if (!s_ball_active[i]) continue;
@@ -144,10 +248,27 @@ static void update_ball_physics(void) {
     ball_tick(&s_balls[i]);
 
     int16_t ball_y = INT_FROM_FIXED16_16(s_balls[i].position.y);
+    Fixed16_16 abs_dx = s_balls[i].velocity.dx < 0
+      ? -s_balls[i].velocity.dx
+      : s_balls[i].velocity.dx;
+    Fixed16_16 abs_dy = s_balls[i].velocity.dy < 0
+      ? -s_balls[i].velocity.dy
+      : s_balls[i].velocity.dy;
+    Fixed16_16 speed_l1 = abs_dx + abs_dy;
 
-    if (ball_y > center.y + radius - BALL_RADIUS) {
+    if (ball_y > bottom_limit ||
+        (ball_y >= stuck_cull_y && speed_l1 <= STUCK_SPEED_THRESHOLD)) {
       reset_ball(&s_balls[i]);
       s_ball_active[i] = false;
+      continue;
+    }
+
+    resolve_circle_border_collision(&s_balls[i], center, radius);
+
+    if (should_cull_offscreen_ball(&s_balls[i], playfield_bounds)) {
+      reset_ball(&s_balls[i]);
+      s_ball_active[i] = false;
+      continue;
     }
   }
 }
@@ -183,9 +304,9 @@ static void launch_ball() {
   int16_t radius = get_playfield_radius();
 
   s_balls[slot].position.x = FIXED16_16_FROM_INT(center.x);
-  s_balls[slot].position.y = FIXED16_16_FROM_INT(center.y - radius + BALL_RADIUS + 2);
-  s_balls[slot].velocity.dx = FIXED16_16_FROM_INT(0);
-  s_balls[slot].velocity.dy = FIXED16_16_FROM_INT(0);
+  s_balls[slot].position.y = FIXED16_16_FROM_INT(center.y + radius - BALL_RADIUS - 1);
+  s_balls[slot].velocity.dx = vary_launch_velocity(LAUNCH_VELOCITY_DX);
+  s_balls[slot].velocity.dy = vary_launch_velocity(LAUNCH_VELOCITY_DY);
   s_ball_active[slot] = true;
 }
 
@@ -305,6 +426,8 @@ static void game_window_disappear(Window *window) {
 static void game_window_unload(Window *window) {
   bitmap_layer_destroy(s_titlescreen_layer);
   s_titlescreen_layer = NULL;
+  gbitmap_destroy(s_titlescreen_bitmap);
+  s_titlescreen_bitmap = NULL;
   text_layer_destroy(s_score_layer);
   s_score_layer = NULL;
   layer_destroy(s_pachinko_layer);
@@ -320,6 +443,7 @@ static void set_ball_count(uint16_t count) {
 }
 
 static void init(void) {
+  srand(time(NULL));
   s_game_window = window_create();
   window_set_background_color(s_game_window, GColorWhite);
   window_set_click_config_provider(s_game_window, game_click_config_provider);
