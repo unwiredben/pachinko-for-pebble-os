@@ -131,6 +131,8 @@ static uint8_t s_framerate = 30;
 #define LAUNCH_VELOCITY_VARIATION_PERCENT 20
 #define BOTTOM_CULL_MARGIN_PX 6
 #define STUCK_SPEED_THRESHOLD FIXED16_16_FROM_INT(1)
+#define BALL_COLLISION_RESTITUTION_NUM 9
+#define BALL_COLLISION_RESTITUTION_DEN 10
 static BallState s_balls[MAX_BALLS];
 static bool s_ball_active[MAX_BALLS];
 
@@ -234,6 +236,80 @@ static bool should_cull_offscreen_ball(const BallState *ball, GRect bounds) {
     next_x < left || next_x > right || next_y < top || next_y > bottom;
 }
 
+static void resolve_ball_ball_collisions(void) {
+  const int16_t min_distance = BALL_RADIUS * 2;
+  const int32_t min_distance_sq = min_distance * min_distance;
+
+  for (int i = 0; i < MAX_BALLS; i++) {
+    if (!s_ball_active[i]) {
+      continue;
+    }
+
+    for (int j = i + 1; j < MAX_BALLS; j++) {
+      if (!s_ball_active[j]) {
+        continue;
+      }
+
+      int32_t x_i = INT_FROM_FIXED16_16(s_balls[i].position.x);
+      int32_t y_i = INT_FROM_FIXED16_16(s_balls[i].position.y);
+      int32_t x_j = INT_FROM_FIXED16_16(s_balls[j].position.x);
+      int32_t y_j = INT_FROM_FIXED16_16(s_balls[j].position.y);
+
+      int32_t diff_x = x_i - x_j;
+      int32_t diff_y = y_i - y_j;
+      int32_t dist_sq = diff_x * diff_x + diff_y * diff_y;
+
+      if (dist_sq >= min_distance_sq) {
+        continue;
+      }
+
+      int32_t distance = isqrt32(dist_sq);
+      if (distance == 0) {
+        diff_x = min_distance;
+        diff_y = 0;
+        distance = min_distance;
+      }
+
+      int32_t normal_x_q10 = (diff_x * 1024) / distance;
+      int32_t normal_y_q10 = (diff_y * 1024) / distance;
+
+      int32_t penetration = min_distance - distance;
+      if (penetration > 0) {
+        int32_t move_q10 = (penetration * 1024) / 2;
+        int32_t move_x = (normal_x_q10 * move_q10) / 1024;
+        int32_t move_y = (normal_y_q10 * move_q10) / 1024;
+
+        // Convert Q10 separation to Q16.16 by scaling with 2^(16-10)=64.
+        s_balls[i].position.x += move_x * 64;
+        s_balls[i].position.y += move_y * 64;
+        s_balls[j].position.x -= move_x * 64;
+        s_balls[j].position.y -= move_y * 64;
+      }
+
+      Fixed16_16 rel_velocity_normal =
+        ((s_balls[i].velocity.dx - s_balls[j].velocity.dx) * normal_x_q10 +
+        (s_balls[i].velocity.dy - s_balls[j].velocity.dy) * normal_y_q10) / 1024;
+
+      if (rel_velocity_normal >= 0) {
+        continue;
+      }
+
+      Fixed16_16 impulse = -(
+        (rel_velocity_normal *
+          (BALL_COLLISION_RESTITUTION_DEN + BALL_COLLISION_RESTITUTION_NUM)) /
+        BALL_COLLISION_RESTITUTION_DEN) / 2;
+
+      Fixed16_16 impulse_x = (impulse * normal_x_q10) / 1024;
+      Fixed16_16 impulse_y = (impulse * normal_y_q10) / 1024;
+
+      s_balls[i].velocity.dx += impulse_x;
+      s_balls[i].velocity.dy += impulse_y;
+      s_balls[j].velocity.dx -= impulse_x;
+      s_balls[j].velocity.dy -= impulse_y;
+    }
+  }
+}
+
 static void update_ball_physics(void) {
   GPoint center = get_playfield_center();
   int16_t radius = get_playfield_radius();
@@ -242,10 +318,20 @@ static void update_ball_physics(void) {
   GRect playfield_bounds = layer_get_bounds(s_pachinko_layer);
 
   for (int i = 0; i < MAX_BALLS; i++) {
-    if (!s_ball_active[i]) continue;
+    if (!s_ball_active[i]) {
+      continue;
+    }
 
     ball_apply_force(&s_balls[i], s_gravity);
     ball_tick(&s_balls[i]);
+  }
+
+  resolve_ball_ball_collisions();
+
+  for (int i = 0; i < MAX_BALLS; i++) {
+    if (!s_ball_active[i]) {
+      continue;
+    }
 
     int16_t ball_y = INT_FROM_FIXED16_16(s_balls[i].position.y);
     Fixed16_16 abs_dx = s_balls[i].velocity.dx < 0
