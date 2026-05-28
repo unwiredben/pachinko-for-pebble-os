@@ -57,6 +57,10 @@ SimpleMenuSection s_options_section[] = {
 };
 
 void change_vibration(int index, void *context) {
+  if (index < 0 || index >= (int)ARRAY_LENGTH(s_options_items)) {
+    return;
+  }
+
   s_vibration_enabled = !s_vibration_enabled;
   SimpleMenuItem *item = &s_options_items[index];
   if (s_vibration_enabled) {
@@ -123,18 +127,30 @@ static AppTimer *s_render_timer = NULL;
 static uint8_t s_framerate = 30;
 
 #define BALL_RADIUS 3
-#define MAX_BALLS 8
 #define BORDER_RESTITUTION_NUM 3
 #define BORDER_RESTITUTION_DEN 10
 #define LAUNCH_VELOCITY_DX (-FIXED16_16_FROM_INT(6))
 #define LAUNCH_VELOCITY_DY (-FIXED16_16_FROM_INT(2))
 #define LAUNCH_VELOCITY_VARIATION_PERCENT 20
-#define BOTTOM_CULL_MARGIN_PX 6
+#define BOTTOM_CULL_MARGIN_PX 8
 #define STUCK_SPEED_THRESHOLD FIXED16_16_FROM_INT(1)
 #define BALL_COLLISION_RESTITUTION_NUM 9
 #define BALL_COLLISION_RESTITUTION_DEN 10
+#define MAX_PINS_PER_ROW 7
+#define PIN_SIZE_PX 2
+#define PIN_COLLISION_RADIUS (BALL_RADIUS + 1)
+#define PIN_RESTITUTION_NUM 2
+#define PIN_RESTITUTION_DEN 10
+#define OUTER_DEFLECTOR_MARGIN_PX 2
+#define OUTER_DEFLECTOR_COS_Q10 350
+#define OUTER_DEFLECTOR_SIN_Q10 962
+
+#define MAX_BALLS 8
 static BallState s_balls[MAX_BALLS];
 static bool s_ball_active[MAX_BALLS];
+
+#define PIN_ROWS 5
+static const uint8_t s_pin_row_counts[PIN_ROWS] = {5, 6, 7, 6, 5};
 
 static Fixed16_16 vary_launch_velocity(Fixed16_16 base_velocity) {
   // Scale launch speed by 80%..120% for slight per-ball variation.
@@ -236,6 +252,178 @@ static bool should_cull_offscreen_ball(const BallState *ball, GRect bounds) {
     next_x < left || next_x > right || next_y < top || next_y > bottom;
 }
 
+static void get_pin_position(uint8_t row, uint8_t col, GPoint center,
+    int16_t radius, GPoint *position) {
+  int16_t pin_spacing = (radius * 2) / 8;
+  if (pin_spacing < BALL_RADIUS * 2 + 2) {
+    pin_spacing = BALL_RADIUS * 2 + 2;
+  }
+
+  int16_t row_spacing = (radius * 2) / 7;
+  if (row_spacing < BALL_RADIUS * 2 + 2) {
+    row_spacing = BALL_RADIUS * 2 + 2;
+  }
+
+  int16_t row_start_y = center.y - radius / 2;
+  int16_t pin_count = s_pin_row_counts[row];
+  int16_t stagger = 0;
+  int16_t row_width = (pin_count - 1) * pin_spacing;
+
+  position->x = center.x - row_width / 2 + stagger + col * pin_spacing;
+  position->y = row_start_y + row * row_spacing;
+}
+
+static GPoint get_outer_deflector_pin_position(GPoint center, int16_t radius) {
+  int16_t ring_radius = radius - OUTER_DEFLECTOR_MARGIN_PX;
+  if (ring_radius < BALL_RADIUS + 2) {
+    ring_radius = BALL_RADIUS + 2;
+  }
+
+  // Place one pin around 20 degrees clockwise from the top of the ring.
+  int16_t x = center.x + (ring_radius * OUTER_DEFLECTOR_COS_Q10) / 1024;
+  int16_t y = center.y - (ring_radius * OUTER_DEFLECTOR_SIN_Q10) / 1024;
+  return GPoint(x, y);
+}
+
+static bool segment_intersects_pin_area(GPoint start, GPoint end, GPoint pin,
+    int32_t collision_radius_sq, GPoint *closest_point) {
+  int32_t start_dx = start.x - pin.x;
+  int32_t start_dy = start.y - pin.y;
+  int32_t start_dist_sq = start_dx * start_dx + start_dy * start_dy;
+  if (start_dist_sq < collision_radius_sq) {
+    *closest_point = start;
+    return true;
+  }
+
+  int32_t end_dx = end.x - pin.x;
+  int32_t end_dy = end.y - pin.y;
+  int32_t end_dist_sq = end_dx * end_dx + end_dy * end_dy;
+  if (end_dist_sq < collision_radius_sq) {
+    *closest_point = end;
+    return true;
+  }
+
+  int32_t seg_dx = end.x - start.x;
+  int32_t seg_dy = end.y - start.y;
+  int64_t seg_len_sq = (int64_t)seg_dx * seg_dx + (int64_t)seg_dy * seg_dy;
+  if (seg_len_sq <= 0) {
+    return false;
+  }
+
+  int64_t t_num = -((int64_t)start_dx * seg_dx + (int64_t)start_dy * seg_dy);
+  if (t_num < 0) {
+    t_num = 0;
+  } else if (t_num > seg_len_sq) {
+    t_num = seg_len_sq;
+  }
+
+  int32_t closest_x = start.x + (int32_t)((seg_dx * t_num) / seg_len_sq);
+  int32_t closest_y = start.y + (int32_t)((seg_dy * t_num) / seg_len_sq);
+  int32_t close_dx = closest_x - pin.x;
+  int32_t close_dy = closest_y - pin.y;
+  int32_t close_dist_sq = close_dx * close_dx + close_dy * close_dy;
+  if (close_dist_sq < collision_radius_sq) {
+    *closest_point = GPoint(closest_x, closest_y);
+    return true;
+  }
+
+  return false;
+}
+
+static void resolve_ball_single_pin_collision(BallState *ball,
+    GPoint previous_position, GPoint pin) {
+  const int32_t collision_radius = PIN_COLLISION_RADIUS;
+  const int32_t collision_radius_sq = collision_radius * collision_radius;
+  int32_t ball_x = INT_FROM_FIXED16_16(ball->position.x);
+  int32_t ball_y = INT_FROM_FIXED16_16(ball->position.y);
+  GPoint current_position = GPoint(ball_x, ball_y);
+
+  GPoint closest_point = current_position;
+  bool swept_hit = segment_intersects_pin_area(previous_position,
+      current_position, pin, collision_radius_sq, &closest_point);
+
+  int32_t diff_x = ball_x - pin.x;
+  int32_t diff_y = ball_y - pin.y;
+  int32_t dist_sq = diff_x * diff_x + diff_y * diff_y;
+  bool overlap = dist_sq < collision_radius_sq;
+  if (!overlap && !swept_hit) {
+    return;
+  }
+
+  if (!overlap && swept_hit) {
+    diff_x = closest_point.x - pin.x;
+    diff_y = closest_point.y - pin.y;
+    dist_sq = diff_x * diff_x + diff_y * diff_y;
+  }
+
+  int32_t distance = isqrt32(dist_sq);
+  if (distance <= 0) {
+    diff_x = 0;
+    diff_y = -1;
+    distance = 1;
+  }
+
+  int32_t normal_x_q10 = (diff_x * 1024) / distance;
+  int32_t normal_y_q10 = (diff_y * 1024) / distance;
+
+  if (overlap) {
+    int32_t penetration = collision_radius - distance;
+    int32_t move_x_q10 = normal_x_q10 * penetration;
+    int32_t move_y_q10 = normal_y_q10 * penetration;
+
+    // Convert Q10 displacement to Q16.16 by scaling with 2^(16-10)=64.
+    ball->position.x += move_x_q10 * 64;
+    ball->position.y += move_y_q10 * 64;
+    ball_x = INT_FROM_FIXED16_16(ball->position.x);
+    ball_y = INT_FROM_FIXED16_16(ball->position.y);
+
+    // Recompute normal after positional correction.
+    diff_x = ball_x - pin.x;
+    diff_y = ball_y - pin.y;
+    int32_t corrected_dist_sq = diff_x * diff_x + diff_y * diff_y;
+    distance = isqrt32(corrected_dist_sq);
+    if (distance <= 0) {
+      distance = 1;
+    }
+    normal_x_q10 = (diff_x * 1024) / distance;
+    normal_y_q10 = (diff_y * 1024) / distance;
+  } else {
+    // Move the ball to the pin boundary at the closest swept-contact point.
+    int32_t resolved_x = pin.x + (normal_x_q10 * collision_radius) / 1024;
+    int32_t resolved_y = pin.y + (normal_y_q10 * collision_radius) / 1024;
+    ball->position.x = FIXED16_16_FROM_INT(resolved_x);
+    ball->position.y = FIXED16_16_FROM_INT(resolved_y);
+  }
+
+  int32_t normal_velocity =
+    (ball->velocity.dx * normal_x_q10 + ball->velocity.dy * normal_y_q10) / 1024;
+  if (swept_hit && normal_velocity > 0) {
+    normal_velocity = -normal_velocity;
+  }
+  if (normal_velocity < 0) {
+    int32_t reflect_scale = ((1024 +
+        (1024 * PIN_RESTITUTION_NUM / PIN_RESTITUTION_DEN)) *
+        normal_velocity) / 1024;
+    ball->velocity.dx -= (reflect_scale * normal_x_q10) / 1024;
+    ball->velocity.dy -= (reflect_scale * normal_y_q10) / 1024;
+  }
+}
+
+static void resolve_ball_pin_collisions(BallState *ball, GPoint previous_position,
+    GPoint center, int16_t radius) {
+  for (uint8_t row = 0; row < PIN_ROWS; row++) {
+    uint8_t pin_count = s_pin_row_counts[row];
+    for (uint8_t col = 0; col < pin_count && col < MAX_PINS_PER_ROW; col++) {
+      GPoint pin;
+      get_pin_position(row, col, center, radius, &pin);
+      resolve_ball_single_pin_collision(ball, previous_position, pin);
+    }
+  }
+
+  GPoint deflector_pin = get_outer_deflector_pin_position(center, radius);
+  resolve_ball_single_pin_collision(ball, previous_position, deflector_pin);
+}
+
 static void resolve_ball_ball_collisions(void) {
   const int16_t min_distance = BALL_RADIUS * 2;
   const int32_t min_distance_sq = min_distance * min_distance;
@@ -310,17 +498,31 @@ static void resolve_ball_ball_collisions(void) {
   }
 }
 
+static bool has_active_balls(void) {
+  for (int i = 0; i < MAX_BALLS; i++) {
+    if (s_ball_active[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void update_ball_physics(void) {
   GPoint center = get_playfield_center();
   int16_t radius = get_playfield_radius();
   int16_t bottom_limit = center.y + radius - BALL_RADIUS;
-  int16_t stuck_cull_y = bottom_limit - BOTTOM_CULL_MARGIN_PX;
+  int16_t catch_band_y = bottom_limit - BOTTOM_CULL_MARGIN_PX;
   GRect playfield_bounds = layer_get_bounds(s_pachinko_layer);
+  GPoint previous_positions[MAX_BALLS];
 
   for (int i = 0; i < MAX_BALLS; i++) {
     if (!s_ball_active[i]) {
       continue;
     }
+
+    previous_positions[i] = GPoint(
+      INT_FROM_FIXED16_16(s_balls[i].position.x),
+      INT_FROM_FIXED16_16(s_balls[i].position.y));
 
     ball_apply_force(&s_balls[i], s_gravity);
     ball_tick(&s_balls[i]);
@@ -333,17 +535,11 @@ static void update_ball_physics(void) {
       continue;
     }
 
-    int16_t ball_y = INT_FROM_FIXED16_16(s_balls[i].position.y);
-    Fixed16_16 abs_dx = s_balls[i].velocity.dx < 0
-      ? -s_balls[i].velocity.dx
-      : s_balls[i].velocity.dx;
-    Fixed16_16 abs_dy = s_balls[i].velocity.dy < 0
-      ? -s_balls[i].velocity.dy
-      : s_balls[i].velocity.dy;
-    Fixed16_16 speed_l1 = abs_dx + abs_dy;
+    resolve_ball_pin_collisions(&s_balls[i], previous_positions[i], center, radius);
 
-    if (ball_y > bottom_limit ||
-        (ball_y >= stuck_cull_y && speed_l1 <= STUCK_SPEED_THRESHOLD)) {
+    int16_t ball_y = INT_FROM_FIXED16_16(s_balls[i].position.y);
+
+    if (ball_y >= catch_band_y && s_balls[i].velocity.dy > 0) {
       reset_ball(&s_balls[i]);
       s_ball_active[i] = false;
       continue;
@@ -363,6 +559,11 @@ static void frame_timer_handler(void *context) {
   if (s_game_state == GAME_STATE_PLAYING) {
     update_ball_physics();
     layer_mark_dirty(s_pachinko_layer);
+
+    if (!has_active_balls()) {
+      s_render_timer = NULL;
+      return;
+    }
   }
   s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler, NULL);
 }
@@ -394,6 +595,10 @@ static void launch_ball() {
   s_balls[slot].velocity.dx = vary_launch_velocity(LAUNCH_VELOCITY_DX);
   s_balls[slot].velocity.dy = vary_launch_velocity(LAUNCH_VELOCITY_DY);
   s_ball_active[slot] = true;
+
+  if (s_render_timer == NULL && s_game_state == GAME_STATE_PLAYING) {
+    s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler, NULL);
+  }
 }
 
 static void game_window_set_active_layers(void) {
@@ -436,6 +641,23 @@ static void update_pachinko_layer(Layer *layer, GContext *ctx) {
     : rect.size.h / 2;
   graphics_context_set_fill_color(ctx, GColorBlack);
   graphics_fill_circle(ctx, GPoint(rect.size.w / 2, rect.size.h / 2), radius);
+
+  GPoint center = GPoint(rect.size.w / 2, rect.size.h / 2);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  for (uint8_t row = 0; row < PIN_ROWS; row++) {
+    uint8_t pin_count = s_pin_row_counts[row];
+    for (uint8_t col = 0; col < pin_count && col < MAX_PINS_PER_ROW; col++) {
+      GPoint pin;
+      get_pin_position(row, col, center, radius, &pin);
+      graphics_fill_rect(ctx, GRect(pin.x - 1, pin.y - 1, PIN_SIZE_PX, PIN_SIZE_PX),
+          0, GCornerNone);
+    }
+  }
+
+  GPoint deflector_pin = get_outer_deflector_pin_position(center, radius);
+  graphics_fill_rect(ctx,
+      GRect(deflector_pin.x - 1, deflector_pin.y - 1, PIN_SIZE_PX, PIN_SIZE_PX),
+      0, GCornerNone);
 
   for (int i = 0; i < MAX_BALLS; i++) {
     if (s_ball_active[i]) {
