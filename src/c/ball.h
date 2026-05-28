@@ -50,9 +50,14 @@ static inline void ball_apply_force(BallState *ball, Velocity force) {
 static inline void draw_ball(GContext *ctx, BallState *ball) {
   int16_t x = INT_FROM_FIXED16_16(ball->position.x);
   int16_t y = INT_FROM_FIXED16_16(ball->position.y);
-  graphics_context_set_stroke_color(ctx, GColorWhite);
   graphics_context_set_stroke_width(ctx, 1);
+#ifdef PBL_COLOR
+  graphics_context_set_stroke_color(ctx, GColorDarkGray);
+  graphics_context_set_fill_color(ctx, GColorLightGray);
+#else
+  graphics_context_set_stroke_color(ctx, GColorWhite);
   graphics_context_set_fill_color(ctx, GColorBlack);
+#endif
   graphics_fill_circle(ctx, GPoint(x, y), 3);
   graphics_draw_circle(ctx, GPoint(x, y), 3);
 }

@@ -136,21 +136,25 @@ static uint8_t s_framerate = 30;
 #define STUCK_SPEED_THRESHOLD FIXED16_16_FROM_INT(1)
 #define BALL_COLLISION_RESTITUTION_NUM 9
 #define BALL_COLLISION_RESTITUTION_DEN 10
-#define MAX_PINS_PER_ROW 7
+#define MAX_PINS_PER_ROW 8
 #define PIN_SIZE_PX 2
 #define PIN_COLLISION_RADIUS (BALL_RADIUS + 1)
 #define PIN_RESTITUTION_NUM 2
 #define PIN_RESTITUTION_DEN 10
-#define OUTER_DEFLECTOR_MARGIN_PX 2
-#define OUTER_DEFLECTOR_COS_Q10 350
-#define OUTER_DEFLECTOR_SIN_Q10 962
+#define OUTER_DEFLECTOR_MARGIN_PX 1
+#define OUTER_DEFLECTOR_ANGLE_DEG 25
+#define Q10_SCALE 1024
+// Angle is measured clockwise from top, so x uses sin(theta), y uses cos(theta).
+#define OUTER_DEFLECTOR_COS_Q10 ((Q10_SCALE * 4226 + 5000) / 10000) // sin(25 deg)
+#define OUTER_DEFLECTOR_SIN_Q10 ((Q10_SCALE * 9063 + 5000) / 10000) // cos(25 deg)
 
 #define MAX_BALLS 8
 static BallState s_balls[MAX_BALLS];
 static bool s_ball_active[MAX_BALLS];
 
 #define PIN_ROWS 5
-static const uint8_t s_pin_row_counts[PIN_ROWS] = {5, 6, 7, 6, 5};
+// static const uint8_t s_pin_row_counts[PIN_ROWS] = {5, 6, 7, 6, 5};
+static const uint8_t s_pin_row_counts[PIN_ROWS] = {6, 7, 8, 7, 6};
 
 static Fixed16_16 vary_launch_velocity(Fixed16_16 base_velocity) {
   // Scale launch speed by 80%..120% for slight per-ball variation.
@@ -279,7 +283,7 @@ static GPoint get_outer_deflector_pin_position(GPoint center, int16_t radius) {
     ring_radius = BALL_RADIUS + 2;
   }
 
-  // Place one pin around 20 degrees clockwise from the top of the ring.
+  // Place one pin around 25 degrees clockwise from the top of the ring.
   int16_t x = center.x + (ring_radius * OUTER_DEFLECTOR_COS_Q10) / 1024;
   int16_t y = center.y - (ring_radius * OUTER_DEFLECTOR_SIN_Q10) / 1024;
   return GPoint(x, y);
@@ -639,6 +643,12 @@ static void update_pachinko_layer(Layer *layer, GContext *ctx) {
   int16_t radius = rect.size.w < rect.size.h
     ? rect.size.w / 2
     : rect.size.h / 2;
+#ifdef PBL_COLOR
+  graphics_context_set_fill_color(ctx, GColorPictonBlue);
+#else
+  graphics_context_set_fill_color(ctx, GColorWhite);
+#endif
+  graphics_fill_rect(ctx, rect, 0, GCornerNone);
   graphics_context_set_fill_color(ctx, GColorBlack);
   graphics_fill_circle(ctx, GPoint(rect.size.w / 2, rect.size.h / 2), radius);
 
@@ -687,7 +697,7 @@ static void game_window_load(Window *window) {
 
   GFont score_font = fonts_get_system_font(FONT_KEY_GOTHIC_28);
 
-  const int16_t text_y_offset = -2;
+  const int16_t text_y_offset = -8;
   const int16_t y_padding = 4;
   GSize font_size = graphics_text_layout_get_content_size(
     s_score_text, score_font, bounds, GTextOverflowModeWordWrap,
