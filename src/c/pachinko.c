@@ -124,7 +124,10 @@ static TextLayer *s_score_layer;
 static char s_score_text[14] = "9999999 balls";
 static Layer *s_pachinko_layer;
 static AppTimer *s_render_timer = NULL;
+static AppTimer *s_titlescreen_timer = NULL;
 static uint8_t s_framerate = 30;
+
+#define TITLESCREEN_AUTODISMISS_DELAY_MS 3000
 
 #define BALL_RADIUS 3
 #define BORDER_RESTITUTION_NUM 3
@@ -616,11 +619,29 @@ static void game_window_set_active_layers(void) {
 
 static bool dismiss_title_screen(void) {
   if (s_game_state == GAME_STATE_TITLESCREEN) {
+    if (s_titlescreen_timer != NULL) {
+      app_timer_cancel(s_titlescreen_timer);
+      s_titlescreen_timer = NULL;
+    }
     s_game_state = GAME_STATE_PLAYING;
     game_window_set_active_layers();
     return true;
   }
   return false;
+}
+
+static void titlescreen_timer_handler(void *context) {
+  s_titlescreen_timer = NULL;
+  dismiss_title_screen();
+}
+
+static void schedule_titlescreen_autodismiss(void) {
+  if (s_game_state != GAME_STATE_TITLESCREEN || s_titlescreen_timer != NULL) {
+    return;
+  }
+
+  s_titlescreen_timer = app_timer_register(TITLESCREEN_AUTODISMISS_DELAY_MS,
+      titlescreen_timer_handler, NULL);
 }
 
 static void game_up_click_handler(ClickRecognizerRef ref, void *context) {
@@ -719,6 +740,7 @@ static void game_window_load(Window *window) {
   layer_add_child(window_layer, s_pachinko_layer);
 
   game_window_set_active_layers();
+  schedule_titlescreen_autodismiss();
 
   // Register new Timer to begin frame rendering loop
   s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler,
@@ -727,6 +749,7 @@ static void game_window_load(Window *window) {
 
 static void game_window_appear(Window *window) {
   game_window_set_active_layers();
+  schedule_titlescreen_autodismiss();
 
   if (s_render_timer == NULL) {
     s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler, NULL);
@@ -738,6 +761,11 @@ static void game_window_disappear(Window *window) {
   if(s_render_timer != NULL) {
     app_timer_cancel(s_render_timer);
     s_render_timer = NULL;
+  }
+
+  if (s_titlescreen_timer != NULL) {
+    app_timer_cancel(s_titlescreen_timer);
+    s_titlescreen_timer = NULL;
   }
 }
 
