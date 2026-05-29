@@ -126,6 +126,12 @@ static Layer *s_pachinko_layer;
 static AppTimer *s_render_timer = NULL;
 static AppTimer *s_titlescreen_timer = NULL;
 static uint8_t s_framerate = 30;
+static bool s_collision_occurred_this_frame = false;
+static uint32_t s_collision_vibe_durations[] = {20};
+static const VibePattern s_collision_vibe_pattern = {
+  .durations = s_collision_vibe_durations,
+  .num_segments = 1,
+};
 
 #define TITLESCREEN_AUTODISMISS_DELAY_MS 3000
 
@@ -357,6 +363,8 @@ static void resolve_ball_single_pin_collision(BallState *ball,
     return;
   }
 
+  s_collision_occurred_this_frame = true;
+
   if (!overlap && swept_hit) {
     diff_x = closest_point.x - pin.x;
     diff_y = closest_point.y - pin.y;
@@ -458,6 +466,8 @@ static void resolve_ball_ball_collisions(void) {
         continue;
       }
 
+      s_collision_occurred_this_frame = true;
+
       int32_t distance = isqrt32(dist_sq);
       if (distance == 0) {
         diff_x = min_distance;
@@ -515,6 +525,8 @@ static bool has_active_balls(void) {
 }
 
 static void update_ball_physics(void) {
+  s_collision_occurred_this_frame = false;
+
   GPoint center = get_playfield_center();
   int16_t radius = get_playfield_radius();
   int16_t bottom_limit = center.y + radius - BALL_RADIUS;
@@ -559,6 +571,10 @@ static void update_ball_physics(void) {
       s_ball_active[i] = false;
       continue;
     }
+  }
+
+  if (s_collision_occurred_this_frame && s_vibration_enabled) {
+    vibes_enqueue_custom_pattern(s_collision_vibe_pattern);
   }
 }
 
