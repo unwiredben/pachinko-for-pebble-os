@@ -9,9 +9,6 @@ accelerometer.
 It was developed in early 2026 by Ben Combee with graphical assets and
 playtesting by Elias Combee.
 
-This code uses the PGE framework for game development from the pebble-hacks
-sample pandas-and-bananas under the MIT license.
-
 User Interface Flow
 ===================
 
