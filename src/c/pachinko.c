@@ -20,15 +20,23 @@ static void set_ball_count(uint16_t count);
 
 static Window *s_options_window;
 static SimpleMenuLayer *s_options_menu_layer;
+static Window *s_layout_window;
+static SimpleMenuLayer *s_layout_menu_layer;
 
 const char s_vibration_on[] = "Disable vibration";
 const char s_vibration_off[] = "Enable vibration";
+static char s_layout_menu_title[24] = "Board layout: Dense";
 
 // forward declarations
 static void change_vibration(int index, void *context);
+static void show_layout_menu(int index, void *context);
+static void select_board_layout(int index, void *context);
 static void show_help(int index, void *context);
 static void show_high_scores(int index, void *context);
 static void reset_ball_count(int index, void *context);
+static int16_t get_active_board_layout_index(void);
+static const char *get_active_board_layout_name(void);
+static void update_layout_menu_title(void);
 
 SimpleMenuItem s_options_items[] = {
   {
@@ -38,6 +46,10 @@ SimpleMenuItem s_options_items[] = {
   {
     .title = "Reset ball count",
     .callback = reset_ball_count,
+  },
+  {
+    .title = "Board layout",
+    .callback = show_layout_menu,
   },
   {
     .title = "High Scores",
@@ -53,6 +65,25 @@ SimpleMenuSection s_options_section[] = {
   {
     .num_items = ARRAY_LENGTH(s_options_items),
     .items = s_options_items,
+  },
+};
+
+SimpleMenuItem s_layout_items[] = {
+  {
+    .title = "Dense",
+    .callback = select_board_layout,
+  },
+  {
+    .title = "Classic",
+    .callback = select_board_layout,
+  },
+};
+
+SimpleMenuSection s_layout_section[] = {
+  {
+    .title = "Board Layout",
+    .num_items = ARRAY_LENGTH(s_layout_items),
+    .items = s_layout_items,
   },
 };
 
@@ -103,6 +134,24 @@ static void options_window_unload(Window *window) {
   }
 }
 
+static void layout_window_load(Window *window) {
+  Layer* layer = window_get_root_layer(s_layout_window);
+  GRect bounds = layer_get_bounds(layer);
+  s_layout_menu_layer = simple_menu_layer_create(
+    bounds, window, s_layout_section, ARRAY_LENGTH(s_layout_section), NULL);
+  menu_layer_set_selected_index(
+    simple_menu_layer_get_menu_layer(s_layout_menu_layer),
+    (MenuIndex) {.section = 0, .row = get_active_board_layout_index()},
+    MenuRowAlignCenter,
+    false);
+  layer_add_child(layer, simple_menu_layer_get_layer(s_layout_menu_layer));
+}
+
+static void layout_window_unload(Window *window) {
+  simple_menu_layer_destroy(s_layout_menu_layer);
+  s_layout_menu_layer = NULL;
+}
+
 static void show_options_window() {
   if (!s_options_window) {
     s_options_window = window_create();
@@ -113,6 +162,22 @@ static void show_options_window() {
   }
   window_stack_push(s_options_window, true /* animated */);
   s_game_state = GAME_STATE_OPTIONS;
+}
+
+static void show_layout_menu(int index, void *context) {
+  if (index < 0 || index >= (int)ARRAY_LENGTH(s_options_items)) {
+    return;
+  }
+
+  if (!s_layout_window) {
+    s_layout_window = window_create();
+    window_set_window_handlers(s_layout_window, (WindowHandlers) {
+      .load = layout_window_load,
+      .unload = layout_window_unload,
+    });
+  }
+
+  window_stack_push(s_layout_window, true /* animated */);
 }
 
 // ------------------------------------------------
@@ -145,7 +210,6 @@ static const VibePattern s_collision_vibe_pattern = {
 #define STUCK_SPEED_THRESHOLD FIXED16_16_FROM_INT(1)
 #define BALL_COLLISION_RESTITUTION_NUM 9
 #define BALL_COLLISION_RESTITUTION_DEN 10
-#define MAX_PINS_PER_ROW 8
 #define PIN_SIZE_PX 2
 #define PIN_COLLISION_RADIUS (BALL_RADIUS + 1)
 #define PIN_RESTITUTION_NUM 2
@@ -161,9 +225,161 @@ static const VibePattern s_collision_vibe_pattern = {
 static BallState s_balls[MAX_BALLS];
 static bool s_ball_active[MAX_BALLS];
 
-#define PIN_ROWS 5
-// static const uint8_t s_pin_row_counts[PIN_ROWS] = {5, 6, 7, 6, 5};
-static const uint8_t s_pin_row_counts[PIN_ROWS] = {6, 7, 8, 7, 6};
+typedef struct PinLayoutPosition {
+  int16_t x_q10;
+  int16_t y_q10;
+} PinLayoutPosition;
+
+typedef struct PinLayout {
+  const PinLayoutPosition *positions;
+  uint8_t count;
+} PinLayout;
+
+#define Q10_FROM_RATIO(num, den) ((int16_t)(((num) * 1024) / (den)))
+
+// Layouts are defined in normalized coordinates where 1024 == playfield radius.
+static const PinLayoutPosition s_dense_pin_layout_positions[] = {
+  {Q10_FROM_RATIO(-5, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(-3, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(-1, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(1, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(3, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(5, 8), Q10_FROM_RATIO(-1, 2)},
+
+  {Q10_FROM_RATIO(-6, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(-4, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(-2, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(0, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(2, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(6, 8), Q10_FROM_RATIO(-3, 14)},
+
+  {Q10_FROM_RATIO(-7, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(-5, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(-3, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(-1, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(1, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(3, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(5, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(7, 8), Q10_FROM_RATIO(1, 14)},
+
+  {Q10_FROM_RATIO(-6, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(-4, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(-2, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(0, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(2, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(6, 8), Q10_FROM_RATIO(5, 14)},
+
+  {Q10_FROM_RATIO(-5, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(-3, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(-1, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(1, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(3, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(5, 8), Q10_FROM_RATIO(9, 14)},
+};
+
+static const PinLayoutPosition s_classic_pin_layout_positions[] = {
+  {Q10_FROM_RATIO(-4, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(-2, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(0, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(2, 8), Q10_FROM_RATIO(-1, 2)},
+  {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(-1, 2)},
+
+  {Q10_FROM_RATIO(-5, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(-3, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(-1, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(1, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(3, 8), Q10_FROM_RATIO(-3, 14)},
+  {Q10_FROM_RATIO(5, 8), Q10_FROM_RATIO(-3, 14)},
+
+  {Q10_FROM_RATIO(-6, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(-4, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(-2, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(0, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(2, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(1, 14)},
+  {Q10_FROM_RATIO(6, 8), Q10_FROM_RATIO(1, 14)},
+
+  {Q10_FROM_RATIO(-5, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(-3, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(-1, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(1, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(3, 8), Q10_FROM_RATIO(5, 14)},
+  {Q10_FROM_RATIO(5, 8), Q10_FROM_RATIO(5, 14)},
+
+  {Q10_FROM_RATIO(-4, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(-2, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(0, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(2, 8), Q10_FROM_RATIO(9, 14)},
+  {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(9, 14)},
+};
+
+static const PinLayout s_dense_pin_layout = {
+  .positions = s_dense_pin_layout_positions,
+  .count = ARRAY_LENGTH(s_dense_pin_layout_positions),
+};
+
+static const PinLayout s_classic_pin_layout = {
+  .positions = s_classic_pin_layout_positions,
+  .count = ARRAY_LENGTH(s_classic_pin_layout_positions),
+};
+
+enum BoardLayout {
+  BOARD_LAYOUT_DENSE,
+  BOARD_LAYOUT_CLASSIC,
+};
+
+static const PinLayout *s_pin_layouts[] = {
+  [BOARD_LAYOUT_DENSE] = &s_dense_pin_layout,
+  [BOARD_LAYOUT_CLASSIC] = &s_classic_pin_layout,
+};
+
+// Switch this value to change which static pin layout is active.
+static enum BoardLayout s_active_board_layout = BOARD_LAYOUT_DENSE;
+
+static const PinLayout *get_active_pin_layout(void) {
+  return s_pin_layouts[s_active_board_layout];
+}
+
+static int16_t get_active_board_layout_index(void) {
+  return (int16_t)s_active_board_layout;
+}
+
+static const char *get_active_board_layout_name(void) {
+  switch (s_active_board_layout) {
+    case BOARD_LAYOUT_CLASSIC:
+      return "Classic";
+    case BOARD_LAYOUT_DENSE:
+    default:
+      return "Dense";
+  }
+}
+
+static void update_layout_menu_title(void) {
+  snprintf(s_layout_menu_title, sizeof(s_layout_menu_title),
+      "Board layout: %s", get_active_board_layout_name());
+}
+
+static void select_board_layout(int index, void *context) {
+  if (index < 0 || index >= (int)ARRAY_LENGTH(s_layout_items)) {
+    return;
+  }
+
+  s_active_board_layout = (enum BoardLayout)index;
+  update_layout_menu_title();
+
+  if (s_options_menu_layer) {
+    layer_mark_dirty(simple_menu_layer_get_layer(s_options_menu_layer));
+  }
+  if (s_pachinko_layer) {
+    layer_mark_dirty(s_pachinko_layer);
+  }
+
+  if (s_layout_window) {
+    window_stack_remove(s_layout_window, true /* animated */);
+  }
+}
 
 static Fixed16_16 vary_launch_velocity(Fixed16_16 base_velocity) {
   // Scale launch speed by 80%..120% for slight per-ball variation.
@@ -265,25 +481,11 @@ static bool should_cull_offscreen_ball(const BallState *ball, GRect bounds) {
     next_x < left || next_x > right || next_y < top || next_y > bottom;
 }
 
-static void get_pin_position(uint8_t row, uint8_t col, GPoint center,
-    int16_t radius, GPoint *position) {
-  int16_t pin_spacing = (radius * 2) / 8;
-  if (pin_spacing < BALL_RADIUS * 2 + 2) {
-    pin_spacing = BALL_RADIUS * 2 + 2;
-  }
-
-  int16_t row_spacing = (radius * 2) / 7;
-  if (row_spacing < BALL_RADIUS * 2 + 2) {
-    row_spacing = BALL_RADIUS * 2 + 2;
-  }
-
-  int16_t row_start_y = center.y - radius / 2;
-  int16_t pin_count = s_pin_row_counts[row];
-  int16_t stagger = 0;
-  int16_t row_width = (pin_count - 1) * pin_spacing;
-
-  position->x = center.x - row_width / 2 + stagger + col * pin_spacing;
-  position->y = row_start_y + row * row_spacing;
+static GPoint get_layout_pin_position(const PinLayoutPosition *layout_position,
+    GPoint center, int16_t radius) {
+  int16_t x = center.x + (radius * layout_position->x_q10) / 1024;
+  int16_t y = center.y + (radius * layout_position->y_q10) / 1024;
+  return GPoint(x, y);
 }
 
 static GPoint get_outer_deflector_pin_position(GPoint center, int16_t radius) {
@@ -426,13 +628,11 @@ static void resolve_ball_single_pin_collision(BallState *ball,
 
 static void resolve_ball_pin_collisions(BallState *ball, GPoint previous_position,
     GPoint center, int16_t radius) {
-  for (uint8_t row = 0; row < PIN_ROWS; row++) {
-    uint8_t pin_count = s_pin_row_counts[row];
-    for (uint8_t col = 0; col < pin_count && col < MAX_PINS_PER_ROW; col++) {
-      GPoint pin;
-      get_pin_position(row, col, center, radius, &pin);
-      resolve_ball_single_pin_collision(ball, previous_position, pin);
-    }
+  const PinLayout *active_pin_layout = get_active_pin_layout();
+  for (uint8_t i = 0; i < active_pin_layout->count; i++) {
+    GPoint pin = get_layout_pin_position(&active_pin_layout->positions[i],
+        center, radius);
+    resolve_ball_single_pin_collision(ball, previous_position, pin);
   }
 
   GPoint deflector_pin = get_outer_deflector_pin_position(center, radius);
@@ -691,14 +891,12 @@ static void update_pachinko_layer(Layer *layer, GContext *ctx) {
 
   GPoint center = GPoint(rect.size.w / 2, rect.size.h / 2);
   graphics_context_set_fill_color(ctx, GColorWhite);
-  for (uint8_t row = 0; row < PIN_ROWS; row++) {
-    uint8_t pin_count = s_pin_row_counts[row];
-    for (uint8_t col = 0; col < pin_count && col < MAX_PINS_PER_ROW; col++) {
-      GPoint pin;
-      get_pin_position(row, col, center, radius, &pin);
-      graphics_fill_rect(ctx, GRect(pin.x - 1, pin.y - 1, PIN_SIZE_PX, PIN_SIZE_PX),
-          0, GCornerNone);
-    }
+  const PinLayout *active_pin_layout = get_active_pin_layout();
+  for (uint8_t i = 0; i < active_pin_layout->count; i++) {
+    GPoint pin = get_layout_pin_position(&active_pin_layout->positions[i],
+        center, radius);
+    graphics_fill_rect(ctx, GRect(pin.x - 1, pin.y - 1, PIN_SIZE_PX, PIN_SIZE_PX),
+        0, GCornerNone);
   }
 
   GPoint deflector_pin = get_outer_deflector_pin_position(center, radius);
@@ -806,6 +1004,7 @@ static void set_ball_count(uint16_t count) {
 
 static void init(void) {
   srand(time(NULL));
+  update_layout_menu_title();
   s_game_window = window_create();
   window_set_background_color(s_game_window, GColorWhite);
   window_set_click_config_provider(s_game_window, game_click_config_provider);
@@ -820,6 +1019,10 @@ static void init(void) {
 }
 
 static void deinit(void) {
+  if (s_layout_window) {
+    window_destroy(s_layout_window);
+    s_layout_window = NULL;
+  }
   if (s_options_window) {
     window_destroy(s_options_window);
     s_options_window = NULL;
