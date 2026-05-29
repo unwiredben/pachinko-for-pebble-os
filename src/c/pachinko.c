@@ -25,7 +25,6 @@ static SimpleMenuLayer *s_layout_menu_layer;
 
 const char s_vibration_on[] = "Disable vibration";
 const char s_vibration_off[] = "Enable vibration";
-static char s_layout_menu_title[24] = "Board layout: Dense";
 
 // forward declarations
 static void change_vibration(int index, void *context);
@@ -35,8 +34,6 @@ static void show_help(int index, void *context);
 static void show_high_scores(int index, void *context);
 static void reset_ball_count(int index, void *context);
 static int16_t get_active_board_layout_index(void);
-static const char *get_active_board_layout_name(void);
-static void update_layout_menu_title(void);
 
 SimpleMenuItem s_options_items[] = {
   {
@@ -67,6 +64,10 @@ SimpleMenuSection s_options_section[] = {
     .items = s_options_items,
   },
 };
+
+static void sync_vibration_menu_item_title(void) {
+  s_options_items[0].title = s_vibration_enabled ? s_vibration_on : s_vibration_off;
+}
 
 SimpleMenuItem s_layout_items[] = {
   {
@@ -102,13 +103,13 @@ void change_vibration(int index, void *context) {
   }
 
   s_vibration_enabled = !s_vibration_enabled;
-  SimpleMenuItem *item = &s_options_items[index];
   if (s_vibration_enabled) {
-    item->title = s_vibration_on;
-  } else {
-    item->title = s_vibration_off;
+    vibes_short_pulse();
   }
-  layer_mark_dirty(simple_menu_layer_get_layer(s_options_menu_layer));
+  sync_vibration_menu_item_title();
+  if (s_options_menu_layer) {
+    layer_mark_dirty(simple_menu_layer_get_layer(s_options_menu_layer));
+  }
   return_to_game_from_options();
 }
 
@@ -126,6 +127,7 @@ void reset_ball_count(int index, void *context) {
 }
 
 static void options_window_load(Window *window) {
+  sync_vibration_menu_item_title();
   Layer* layer = window_get_root_layer(s_options_window);
   GRect bounds = layer_get_bounds(layer);
   s_options_menu_layer = simple_menu_layer_create(
@@ -164,6 +166,7 @@ static void layout_window_unload(Window *window) {
 }
 
 static void show_options_window() {
+  sync_vibration_menu_item_title();
   if (!s_options_window) {
     s_options_window = window_create();
     window_set_window_handlers(s_options_window, (WindowHandlers) {
@@ -357,28 +360,12 @@ static int16_t get_active_board_layout_index(void) {
   return (int16_t)s_active_board_layout;
 }
 
-static const char *get_active_board_layout_name(void) {
-  switch (s_active_board_layout) {
-    case BOARD_LAYOUT_CLASSIC:
-      return "Classic";
-    case BOARD_LAYOUT_DENSE:
-    default:
-      return "Dense";
-  }
-}
-
-static void update_layout_menu_title(void) {
-  snprintf(s_layout_menu_title, sizeof(s_layout_menu_title),
-      "Board layout: %s", get_active_board_layout_name());
-}
-
 static void select_board_layout(int index, void *context) {
   if (index < 0 || index >= (int)ARRAY_LENGTH(s_layout_items)) {
     return;
   }
 
   s_active_board_layout = (enum BoardLayout)index;
-  update_layout_menu_title();
 
   if (s_options_menu_layer) {
     layer_mark_dirty(simple_menu_layer_get_layer(s_options_menu_layer));
@@ -1012,7 +999,6 @@ static void set_ball_count(uint16_t count) {
 
 static void init(void) {
   srand(time(NULL));
-  update_layout_menu_title();
   s_game_window = window_create();
   window_set_background_color(s_game_window, GColorWhite);
   window_set_click_config_provider(s_game_window, game_click_config_provider);
