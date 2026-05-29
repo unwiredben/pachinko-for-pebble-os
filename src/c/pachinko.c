@@ -87,6 +87,15 @@ SimpleMenuSection s_layout_section[] = {
   },
 };
 
+static void return_to_game_from_options(void) {
+  if (s_layout_window && window_stack_contains_window(s_layout_window)) {
+    window_stack_remove(s_layout_window, true /* animated */);
+  }
+  if (s_options_window && window_stack_contains_window(s_options_window)) {
+    window_stack_remove(s_options_window, true /* animated */);
+  }
+}
+
 void change_vibration(int index, void *context) {
   if (index < 0 || index >= (int)ARRAY_LENGTH(s_options_items)) {
     return;
@@ -100,6 +109,7 @@ void change_vibration(int index, void *context) {
     item->title = s_vibration_off;
   }
   layer_mark_dirty(simple_menu_layer_get_layer(s_options_menu_layer));
+  return_to_game_from_options();
 }
 
 void show_help(int index, void *context) {
@@ -112,6 +122,7 @@ void show_high_scores(int index, void *context) {
 
 void reset_ball_count(int index, void *context) {
   set_ball_count(INITIAL_BALL_COUNT);
+  return_to_game_from_options();
 }
 
 static void options_window_load(Window *window) {
@@ -375,10 +386,7 @@ static void select_board_layout(int index, void *context) {
   if (s_pachinko_layer) {
     layer_mark_dirty(s_pachinko_layer);
   }
-
-  if (s_layout_window) {
-    window_stack_remove(s_layout_window, true /* animated */);
-  }
+  return_to_game_from_options();
 }
 
 static Fixed16_16 vary_launch_velocity(Fixed16_16 base_velocity) {
