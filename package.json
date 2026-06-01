@@ -1,7 +1,7 @@
 {
   "name": "pachinko-for-pebble",
   "author": "Ben Combee <combee@techwood.org>",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {},
@@ -13,8 +13,7 @@
     "targetPlatforms": [
       "aplite",
       "basalt",
-      "diorite",
-      "emery"
+      "diorite"
     ],
     "watchapp": {
       "watchface": false
