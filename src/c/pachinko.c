@@ -16,6 +16,9 @@ static bool s_vibration_enabled = true;
 #define INITIAL_BALL_COUNT 100
 static uint32_t s_ball_count = INITIAL_BALL_COUNT;
 static bool s_auto_launch_enabled = false;
+static bool s_down_press_active = false;
+static bool s_down_press_launch_armed = false;
+static uint32_t s_down_press_start_ms = 0;
 
 static void set_ball_count(uint16_t count);
 
@@ -221,6 +224,10 @@ static const VibePattern s_collision_vibe_pattern = {
 
 #define TITLESCREEN_AUTODISMISS_DELAY_MS 3000
 #define LAUNCH_REPEAT_DELAY_MS 500
+#define LAUNCH_CHARGE_MAX_MS 500
+#define LAUNCH_SPEED_MIN_PERCENT 46
+#define LAUNCH_SPEED_MAX_PERCENT 120
+#define AUTO_LAUNCH_SPEED_SCALE_PERCENT 75
 
 #define BALL_RADIUS 3
 #define BORDER_RESTITUTION_NUM 3
@@ -794,7 +801,14 @@ static void frame_timer_handler(void *context) {
   s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler, NULL);
 }
 
-static void launch_ball(void);
+static uint32_t current_time_ms(void) {
+  time_t seconds = 0;
+  uint16_t milliseconds = 0;
+  time_ms(&seconds, &milliseconds);
+  return ((uint32_t)seconds * 1000) + milliseconds;
+}
+
+static void launch_ball(uint32_t hold_ms, uint32_t speed_scale_percent);
 
 static void stop_auto_launch_timer(void) {
   if (s_auto_launch_timer != NULL) {
@@ -812,7 +826,7 @@ static void auto_launch_timer_handler(void *context) {
     return;
   }
 
-  launch_ball();
+  launch_ball(LAUNCH_CHARGE_MAX_MS, AUTO_LAUNCH_SPEED_SCALE_PERCENT);
   start_auto_launch_timer();
 }
 
@@ -831,14 +845,14 @@ static void toggle_auto_launch() {
   s_auto_launch_enabled = !s_auto_launch_enabled;
 
   if (s_auto_launch_enabled) {
-    launch_ball();
+    launch_ball(LAUNCH_CHARGE_MAX_MS, AUTO_LAUNCH_SPEED_SCALE_PERCENT);
     start_auto_launch_timer();
   } else {
     stop_auto_launch_timer();
   }
 }
 
-static void launch_ball(void) {
+static void launch_ball(uint32_t hold_ms, uint32_t speed_scale_percent) {
   if (s_ball_count == 0) return;
 
   int slot = -1;
@@ -850,6 +864,20 @@ static void launch_ball(void) {
   }
   if (slot < 0) return;
 
+  uint32_t clamped_hold = hold_ms;
+  if (clamped_hold > LAUNCH_CHARGE_MAX_MS) {
+    clamped_hold = LAUNCH_CHARGE_MAX_MS;
+  }
+
+  int32_t launch_speed_percent = LAUNCH_SPEED_MIN_PERCENT +
+    ((int32_t)(LAUNCH_SPEED_MAX_PERCENT - LAUNCH_SPEED_MIN_PERCENT) *
+    (int32_t)clamped_hold) / (int32_t)LAUNCH_CHARGE_MAX_MS;
+
+  if (speed_scale_percent != 100) {
+    launch_speed_percent =
+        (launch_speed_percent * (int32_t)speed_scale_percent) / 100;
+  }
+
   set_ball_count(s_ball_count - 1);
 
   GPoint center = get_playfield_center();
@@ -857,8 +885,10 @@ static void launch_ball(void) {
 
   s_balls[slot].position.x = FIXED16_16_FROM_INT(center.x);
   s_balls[slot].position.y = FIXED16_16_FROM_INT(center.y + radius - BALL_RADIUS - 1);
-  s_balls[slot].velocity.dx = vary_launch_velocity(LAUNCH_VELOCITY_DX);
-  s_balls[slot].velocity.dy = vary_launch_velocity(LAUNCH_VELOCITY_DY);
+    s_balls[slot].velocity.dx = vary_launch_velocity(
+      (LAUNCH_VELOCITY_DX * launch_speed_percent) / 100);
+    s_balls[slot].velocity.dy = vary_launch_velocity(
+      (LAUNCH_VELOCITY_DY * launch_speed_percent) / 100);
   s_ball_active[slot] = true;
 
   if (s_render_timer == NULL && s_game_state == GAME_STATE_PLAYING) {
@@ -913,9 +943,34 @@ static void game_select_click_handler(ClickRecognizerRef ref, void *context) {
   show_options_window();
 }
 
-static void game_down_click_handler(ClickRecognizerRef ref, void *context) {
-  if (dismiss_title_screen()) return;
-  launch_ball();
+static void game_down_raw_down_handler(ClickRecognizerRef ref, void *context) {
+  if (s_down_press_active) {
+    return;
+  }
+
+  if (dismiss_title_screen() || s_game_state != GAME_STATE_PLAYING) {
+    s_down_press_launch_armed = false;
+    return;
+  }
+
+  s_down_press_active = true;
+  s_down_press_launch_armed = true;
+  s_down_press_start_ms = current_time_ms();
+}
+
+static void game_down_raw_up_handler(ClickRecognizerRef ref, void *context) {
+  if (!s_down_press_active) {
+    return;
+  }
+
+  s_down_press_active = false;
+
+  if (!s_down_press_launch_armed) {
+    return;
+  }
+
+  s_down_press_launch_armed = false;
+  launch_ball(current_time_ms() - s_down_press_start_ms, 100);
 }
 
 static void update_pachinko_layer(Layer *layer, GContext *ctx) {
@@ -957,7 +1012,10 @@ static void update_pachinko_layer(Layer *layer, GContext *ctx) {
 static void game_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, game_select_click_handler);
   window_single_click_subscribe(BUTTON_ID_UP, game_up_click_handler);
-  window_single_click_subscribe(BUTTON_ID_DOWN, game_down_click_handler);
+  window_raw_click_subscribe(BUTTON_ID_DOWN,
+      game_down_raw_down_handler,
+      game_down_raw_up_handler,
+      NULL);
 }
 
 static void game_window_load(Window *window) {
@@ -1013,6 +1071,8 @@ static void game_window_appear(Window *window) {
 
 static void game_window_disappear(Window *window) {
   stop_auto_launch_timer();
+  s_down_press_active = false;
+  s_down_press_launch_armed = false;
 
   // Stop the game
   if(s_render_timer != NULL) {
