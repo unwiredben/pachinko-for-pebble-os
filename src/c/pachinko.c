@@ -10,6 +10,12 @@ enum GameState {
   GAME_STATE_OPTIONS,
 };
 
+enum PersistKey {
+  PERSIST_KEY_BOARD_LAYOUT = 1,
+  PERSIST_KEY_VIBRATION_ENABLED = 2,
+  PERSIST_KEY_BALL_COUNT = 3,
+};
+
 static enum GameState s_game_state = GAME_STATE_TITLESCREEN;
 
 static bool s_vibration_enabled = true;
@@ -26,6 +32,25 @@ static Window *s_options_window;
 static SimpleMenuLayer *s_options_menu_layer;
 static Window *s_layout_window;
 static SimpleMenuLayer *s_layout_menu_layer;
+static Window *s_help_window;
+static ScrollLayer *s_help_scroll_layer;
+static TextLayer *s_help_text_layer;
+
+static const char s_help_text[] =
+  "CONTROLS\n"
+  "\n"
+  "UP: Toggle auto launch.\n"
+  "\n"
+  "SELECT: Open the options menu.\n"
+  "\n"
+  "DOWN: Hold to charge a manual shot, then release to launch.\n"
+  "\n"
+  "GAMEPLAY\n"
+  "\n"
+  "Each launched ball bounces through the pin field until it drops back out.\n"
+  "\n"
+  "Keep an eye on your remaining ball count and use the board layout menu to switch playfields.\n"
+  " \n";
 
 const char s_vibration_on[] = "Disable vibration";
 const char s_vibration_off[] = "Enable vibration";
@@ -35,11 +60,12 @@ static void change_vibration(int index, void *context);
 static void show_layout_menu(int index, void *context);
 static void select_board_layout(int index, void *context);
 static void show_help(int index, void *context);
-static void show_high_scores(int index, void *context);
 static void reset_ball_count(int index, void *context);
 static int16_t get_active_board_layout_index(void);
 static void start_auto_launch_timer(void);
 static void stop_auto_launch_timer(void);
+static void help_window_load(Window *window);
+static void help_window_unload(Window *window);
 
 SimpleMenuItem s_options_items[] = {
   {
@@ -53,10 +79,6 @@ SimpleMenuItem s_options_items[] = {
   {
     .title = "Board layout",
     .callback = show_layout_menu,
-  },
-  {
-    .title = "High Scores",
-    .callback = show_high_scores,
   },
   {
     .title = "How to Play",
@@ -113,6 +135,7 @@ void change_vibration(int index, void *context) {
   }
 
   s_vibration_enabled = !s_vibration_enabled;
+  persist_write_bool(PERSIST_KEY_VIBRATION_ENABLED, s_vibration_enabled);
   if (s_vibration_enabled) {
     vibes_short_pulse();
   }
@@ -124,11 +147,19 @@ void change_vibration(int index, void *context) {
 }
 
 void show_help(int index, void *context) {
-  // FIXME: show scroller with help text
-}
+  if (index < 0 || index >= (int)ARRAY_LENGTH(s_options_items)) {
+    return;
+  }
 
-void show_high_scores(int index, void *context) {
-  // FIXME: show high scores window
+  if (!s_help_window) {
+    s_help_window = window_create();
+    window_set_window_handlers(s_help_window, (WindowHandlers) {
+      .load = help_window_load,
+      .unload = help_window_unload,
+    });
+  }
+
+  window_stack_push(s_help_window, true /* animated */);
 }
 
 void reset_ball_count(int index, void *context) {
@@ -175,6 +206,39 @@ static void layout_window_load(Window *window) {
 static void layout_window_unload(Window *window) {
   simple_menu_layer_destroy(s_layout_menu_layer);
   s_layout_menu_layer = NULL;
+}
+
+static void help_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  GRect text_bounds = GRect(4, 4, bounds.size.w - 8, 2000);
+
+  s_help_scroll_layer = scroll_layer_create(bounds);
+  scroll_layer_set_click_config_onto_window(s_help_scroll_layer, window);
+
+  s_help_text_layer = text_layer_create(text_bounds);
+  text_layer_set_background_color(s_help_text_layer, GColorClear);
+  text_layer_set_text_color(s_help_text_layer, GColorBlack);
+  text_layer_set_font(s_help_text_layer,
+                      fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_overflow_mode(s_help_text_layer, GTextOverflowModeWordWrap);
+  text_layer_set_text_alignment(s_help_text_layer, GTextAlignmentLeft);
+  text_layer_set_text(s_help_text_layer, s_help_text);
+
+  GSize text_size = text_layer_get_content_size(s_help_text_layer);
+  text_layer_set_size(s_help_text_layer, GSize(text_bounds.size.w, text_size.h));
+
+  scroll_layer_add_child(s_help_scroll_layer, text_layer_get_layer(s_help_text_layer));
+  scroll_layer_set_content_size(s_help_scroll_layer,
+                                GSize(bounds.size.w, text_size.h + 8));
+  layer_add_child(window_layer, scroll_layer_get_layer(s_help_scroll_layer));
+}
+
+static void help_window_unload(Window *window) {
+  text_layer_destroy(s_help_text_layer);
+  s_help_text_layer = NULL;
+  scroll_layer_destroy(s_help_scroll_layer);
+  s_help_scroll_layer = NULL;
 }
 
 static void show_options_window() {
@@ -425,12 +489,47 @@ static int16_t get_active_board_layout_index(void) {
   return (int16_t)s_active_board_layout;
 }
 
+static void restore_persisted_vibration_setting(void) {
+  if (!persist_exists(PERSIST_KEY_VIBRATION_ENABLED)) {
+    return;
+  }
+
+  s_vibration_enabled = persist_read_bool(PERSIST_KEY_VIBRATION_ENABLED);
+}
+
+static void restore_persisted_ball_count(void) {
+  if (!persist_exists(PERSIST_KEY_BALL_COUNT)) {
+    return;
+  }
+
+  const int stored_ball_count = persist_read_int(PERSIST_KEY_BALL_COUNT);
+  if (stored_ball_count < 0 || stored_ball_count > 65535) {
+    return;
+  }
+
+  s_ball_count = (uint32_t)stored_ball_count;
+}
+
+static void restore_persisted_board_layout(void) {
+  if (!persist_exists(PERSIST_KEY_BOARD_LAYOUT)) {
+    return;
+  }
+
+  const int stored_layout = persist_read_int(PERSIST_KEY_BOARD_LAYOUT);
+  if (stored_layout < 0 || stored_layout >= (int)ARRAY_LENGTH(s_pin_layouts)) {
+    return;
+  }
+
+  s_active_board_layout = (enum BoardLayout)stored_layout;
+}
+
 static void select_board_layout(int index, void *context) {
   if (index < 0 || index >= (int)ARRAY_LENGTH(s_layout_items)) {
     return;
   }
 
   s_active_board_layout = (enum BoardLayout)index;
+  persist_write_int(PERSIST_KEY_BOARD_LAYOUT, index);
 
   if (s_options_menu_layer) {
     layer_mark_dirty(simple_menu_layer_get_layer(s_options_menu_layer));
@@ -1149,6 +1248,7 @@ static void game_window_unload(Window *window) {
 
 static void set_ball_count(uint16_t count) {
   s_ball_count = count;
+  persist_write_int(PERSIST_KEY_BALL_COUNT, count);
   snprintf(s_score_text, sizeof(s_score_text), "%lu balls", s_ball_count);
   if (s_score_layer) {
     layer_mark_dirty(text_layer_get_layer(s_score_layer));
@@ -1157,6 +1257,9 @@ static void set_ball_count(uint16_t count) {
 
 static void init(void) {
   srand(time(NULL));
+  restore_persisted_vibration_setting();
+  restore_persisted_ball_count();
+  restore_persisted_board_layout();
   s_game_window = window_create();
   window_set_background_color(s_game_window, GColorWhite);
   window_set_click_config_provider(s_game_window, game_click_config_provider);
@@ -1167,12 +1270,16 @@ static void init(void) {
     .unload = game_window_unload,
   });
   window_stack_push(s_game_window, true /* animated */);
-  set_ball_count(INITIAL_BALL_COUNT);
+  set_ball_count((uint16_t)s_ball_count);
 }
 
 static void deinit(void) {
   stop_auto_launch_timer();
 
+  if (s_help_window) {
+    window_destroy(s_help_window);
+    s_help_window = NULL;
+  }
   if (s_layout_window) {
     window_destroy(s_layout_window);
     s_layout_window = NULL;
