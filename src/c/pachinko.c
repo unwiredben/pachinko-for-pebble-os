@@ -84,6 +84,10 @@ SimpleMenuItem s_layout_items[] = {
     .title = "Classic",
     .callback = select_board_layout,
   },
+  {
+    .title = "Happy Face",
+    .callback = select_board_layout,
+  },
 };
 
 SimpleMenuSection s_layout_section[] = {
@@ -344,6 +348,45 @@ static const PinLayoutPosition s_classic_pin_layout_positions[] = {
   {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(9, 14)},
 };
 
+static const PinLayoutPosition s_happy_face_pin_layout_positions[] = {
+  // Left eye as matching parenthesis arcs.
+  {Q10_FROM_RATIO(-4, 8), Q10_FROM_RATIO(-3, 8)},
+  {Q10_FROM_RATIO(-9, 16), Q10_FROM_RATIO(-1, 4)},
+  {Q10_FROM_RATIO(-9, 16), Q10_FROM_RATIO(-1, 8)},
+  {Q10_FROM_RATIO(-4, 8), Q10_FROM_RATIO(0, 8)},
+
+  {Q10_FROM_RATIO(-7, 16), Q10_FROM_RATIO(-3, 8)},
+  {Q10_FROM_RATIO(-5, 16), Q10_FROM_RATIO(-1, 4)},
+  {Q10_FROM_RATIO(-5, 16), Q10_FROM_RATIO(-1, 8)},
+  {Q10_FROM_RATIO(-7, 16), Q10_FROM_RATIO(0, 8)},
+
+  // Right eye as matching parenthesis arcs.
+  {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(-3, 8)},
+  {Q10_FROM_RATIO(9, 16), Q10_FROM_RATIO(-1, 4)},
+  {Q10_FROM_RATIO(9, 16), Q10_FROM_RATIO(-1, 8)},
+  {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(0, 8)},
+
+  {Q10_FROM_RATIO(7, 16), Q10_FROM_RATIO(-3, 8)},
+  {Q10_FROM_RATIO(5, 16), Q10_FROM_RATIO(-1, 4)},
+  {Q10_FROM_RATIO(5, 16), Q10_FROM_RATIO(-1, 8)},
+  {Q10_FROM_RATIO(7, 16), Q10_FROM_RATIO(0, 8)},
+
+  // Smile arc with open center so balls can enter and exit the curve.
+  {Q10_FROM_RATIO(-6, 8), Q10_FROM_RATIO(3, 8)},
+  {Q10_FROM_RATIO(-5, 8), Q10_FROM_RATIO(7, 16)},
+  {Q10_FROM_RATIO(-4, 8), Q10_FROM_RATIO(1, 2)},
+  {Q10_FROM_RATIO(-3, 8), Q10_FROM_RATIO(9, 16)},
+  {Q10_FROM_RATIO(-2, 8), Q10_FROM_RATIO(10, 16)},
+  {Q10_FROM_RATIO(-1, 8), Q10_FROM_RATIO(11, 16)},
+  {Q10_FROM_RATIO(0, 8), Q10_FROM_RATIO(11, 16)},
+  {Q10_FROM_RATIO(1, 8), Q10_FROM_RATIO(11, 16)},
+  {Q10_FROM_RATIO(2, 8), Q10_FROM_RATIO(10, 16)},
+  {Q10_FROM_RATIO(3, 8), Q10_FROM_RATIO(9, 16)},
+  {Q10_FROM_RATIO(4, 8), Q10_FROM_RATIO(1, 2)},
+  {Q10_FROM_RATIO(5, 8), Q10_FROM_RATIO(7, 16)},
+  {Q10_FROM_RATIO(6, 8), Q10_FROM_RATIO(3, 8)},
+};
+
 static const PinLayout s_dense_pin_layout = {
   .positions = s_dense_pin_layout_positions,
   .count = ARRAY_LENGTH(s_dense_pin_layout_positions),
@@ -354,14 +397,21 @@ static const PinLayout s_classic_pin_layout = {
   .count = ARRAY_LENGTH(s_classic_pin_layout_positions),
 };
 
+static const PinLayout s_happy_face_pin_layout = {
+  .positions = s_happy_face_pin_layout_positions,
+  .count = ARRAY_LENGTH(s_happy_face_pin_layout_positions),
+};
+
 enum BoardLayout {
   BOARD_LAYOUT_DENSE,
   BOARD_LAYOUT_CLASSIC,
+  BOARD_LAYOUT_HAPPY_FACE,
 };
 
 static const PinLayout *s_pin_layouts[] = {
   [BOARD_LAYOUT_DENSE] = &s_dense_pin_layout,
   [BOARD_LAYOUT_CLASSIC] = &s_classic_pin_layout,
+  [BOARD_LAYOUT_HAPPY_FACE] = &s_happy_face_pin_layout,
 };
 
 // Switch this value to change which static pin layout is active.
