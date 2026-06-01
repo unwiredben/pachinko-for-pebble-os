@@ -15,6 +15,7 @@ static enum GameState s_game_state = GAME_STATE_TITLESCREEN;
 static bool s_vibration_enabled = true;
 #define INITIAL_BALL_COUNT 100
 static uint32_t s_ball_count = INITIAL_BALL_COUNT;
+static bool s_auto_launch_enabled = false;
 
 static void set_ball_count(uint16_t count);
 
@@ -34,6 +35,8 @@ static void show_help(int index, void *context);
 static void show_high_scores(int index, void *context);
 static void reset_ball_count(int index, void *context);
 static int16_t get_active_board_layout_index(void);
+static void start_auto_launch_timer(void);
+static void stop_auto_launch_timer(void);
 
 SimpleMenuItem s_options_items[] = {
   {
@@ -145,6 +148,8 @@ static void options_window_unload(Window *window) {
   else {
     s_game_state = GAME_STATE_PLAYING;
   }
+
+  start_auto_launch_timer();
 }
 
 static void layout_window_load(Window *window) {
@@ -166,6 +171,7 @@ static void layout_window_unload(Window *window) {
 }
 
 static void show_options_window() {
+  stop_auto_launch_timer();
   sync_vibration_menu_item_title();
   if (!s_options_window) {
     s_options_window = window_create();
@@ -204,6 +210,7 @@ static char s_score_text[14] = "9999999 balls";
 static Layer *s_pachinko_layer;
 static AppTimer *s_render_timer = NULL;
 static AppTimer *s_titlescreen_timer = NULL;
+static AppTimer *s_auto_launch_timer = NULL;
 static uint8_t s_framerate = 30;
 static bool s_collision_occurred_this_frame = false;
 static uint32_t s_collision_vibe_durations[] = {20};
@@ -213,6 +220,7 @@ static const VibePattern s_collision_vibe_pattern = {
 };
 
 #define TITLESCREEN_AUTODISMISS_DELAY_MS 3000
+#define LAUNCH_REPEAT_DELAY_MS 500
 
 #define BALL_RADIUS 3
 #define BORDER_RESTITUTION_NUM 3
@@ -786,12 +794,51 @@ static void frame_timer_handler(void *context) {
   s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler, NULL);
 }
 
+static void launch_ball(void);
 
-static void toggle_auto_launch() {
-  // Placeholder function to toggle auto-launch feature
+static void stop_auto_launch_timer(void) {
+  if (s_auto_launch_timer != NULL) {
+    app_timer_cancel(s_auto_launch_timer);
+    s_auto_launch_timer = NULL;
+  }
 }
 
-static void launch_ball() {
+static void start_auto_launch_timer(void);
+
+static void auto_launch_timer_handler(void *context) {
+  s_auto_launch_timer = NULL;
+
+  if (!s_auto_launch_enabled || s_game_state != GAME_STATE_PLAYING) {
+    return;
+  }
+
+  launch_ball();
+  start_auto_launch_timer();
+}
+
+static void start_auto_launch_timer(void) {
+  if (!s_auto_launch_enabled || s_game_state != GAME_STATE_PLAYING ||
+      s_auto_launch_timer != NULL) {
+    return;
+  }
+
+  s_auto_launch_timer = app_timer_register(
+      LAUNCH_REPEAT_DELAY_MS, auto_launch_timer_handler, NULL);
+}
+
+
+static void toggle_auto_launch() {
+  s_auto_launch_enabled = !s_auto_launch_enabled;
+
+  if (s_auto_launch_enabled) {
+    launch_ball();
+    start_auto_launch_timer();
+  } else {
+    stop_auto_launch_timer();
+  }
+}
+
+static void launch_ball(void) {
   if (s_ball_count == 0) return;
 
   int slot = -1;
@@ -836,6 +883,7 @@ static bool dismiss_title_screen(void) {
     }
     s_game_state = GAME_STATE_PLAYING;
     game_window_set_active_layers();
+    start_auto_launch_timer();
     return true;
   }
   return false;
@@ -906,13 +954,10 @@ static void update_pachinko_layer(Layer *layer, GContext *ctx) {
   }
 }
 
-#define LAUNCH_REPEAT_DELAY_MS 500
-
 static void game_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, game_select_click_handler);
   window_single_click_subscribe(BUTTON_ID_UP, game_up_click_handler);
-  window_single_repeating_click_subscribe(
-    BUTTON_ID_DOWN, LAUNCH_REPEAT_DELAY_MS, game_down_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, game_down_click_handler);
 }
 
 static void game_window_load(Window *window) {
@@ -959,6 +1004,7 @@ static void game_window_load(Window *window) {
 static void game_window_appear(Window *window) {
   game_window_set_active_layers();
   schedule_titlescreen_autodismiss();
+  start_auto_launch_timer();
 
   if (s_render_timer == NULL) {
     s_render_timer = app_timer_register(1000 / s_framerate, frame_timer_handler, NULL);
@@ -966,6 +1012,8 @@ static void game_window_appear(Window *window) {
 }
 
 static void game_window_disappear(Window *window) {
+  stop_auto_launch_timer();
+
   // Stop the game
   if(s_render_timer != NULL) {
     app_timer_cancel(s_render_timer);
@@ -1013,6 +1061,8 @@ static void init(void) {
 }
 
 static void deinit(void) {
+  stop_auto_launch_timer();
+
   if (s_layout_window) {
     window_destroy(s_layout_window);
     s_layout_window = NULL;
